@@ -27,7 +27,9 @@ final class Player {
 
     init() {
         engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        // No connect() here — see the comment in `play(url:)` on why the
+        // connection format has to come from the actual file, not this
+        // default.
     }
 
     func play(url: URL, from: TimeInterval = 0, meGain: Double, remoteGain: Double) throws {
@@ -43,6 +45,26 @@ final class Player {
             buffer = full
             loadedURL = url
             duration = Double(frameCount) / format.sampleRate
+
+            // `engine.connect(_:to:format:)` with `format: nil` derives the
+            // connection's sample rate from the player node's own output
+            // format at connect time — for a freshly attached node with
+            // nothing scheduled yet, that's the engine's default processing
+            // rate (the hardware output rate, e.g. 44.1/48kHz), not this
+            // file's 16kHz. Scheduling a 16kHz buffer over a connection
+            // declared at a higher rate plays it back too fast instead of
+            // being resampled — audible as a pitched-up, chipmunked voice.
+            // Confirmed by ear during this session (this bug predates the
+            // GUI redesign; step 5 never actually listened to a playback,
+            // only checked file existence/format).
+            //
+            // Fix: reconnect using the real file's format every time a new
+            // file loads. The engine still resamples transparently at the
+            // mixer -> hardware-output stage, so this doesn't lose fidelity
+            // — it just tells the engine the true input rate.
+            engine.stop()
+            engine.disconnectNodeOutput(playerNode)
+            engine.connect(playerNode, to: engine.mainMixerNode, format: format)
         }
         guard let buffer else { return }
 

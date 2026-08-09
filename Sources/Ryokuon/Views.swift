@@ -463,14 +463,14 @@ struct SessionDetailPane: View {
         .onChange(of: appState.transcribingSessionID) { _, newValue in
             if newValue == nil { loadTranscript() }
         }
-        .navigationTitle(displayName)
+        // Binding form, not `.navigationTitle(displayName)` — that plus a
+        // separate toolbar TextField showed the session name twice in the
+        // toolbar (confirmed by screenshot). The binding gives a native,
+        // inline-editable window title (the same rename affordance Finder/
+        // Notes use), so no extra text field is needed at all.
+        .navigationTitle($displayName)
+        .onChange(of: displayName) { _, newValue in appState.rename(session, to: newValue) }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                TextField(appState.t(.sessionNamePlaceholder), text: $displayName)
-                    .textFieldStyle(.plain)
-                    .font(.headline)
-                    .onSubmit { appState.rename(session, to: displayName) }
-            }
             ToolbarItem {
                 Button {
                     appState.transcribeSession(session)
@@ -586,7 +586,17 @@ private struct CompactPlayerBar: View {
 
     private var isPlayingThis: Bool { appState.playingSessionID == session.id }
     private var duration: Double { max(session.durationSeconds, 0.01) }
-    private var displayTime: Double { isScrubbing ? scrubTime : appState.playbackTime }
+
+    /// `appState.playbackTime` is shared across whichever session is
+    /// actually playing — reading it directly here for a session that
+    /// *isn't* the one playing shows whatever was left over from the last
+    /// thing played (confirmed visually: switching to an unplayed 2s
+    /// session showed "0:04" left over from a previous session). Falls
+    /// back to 0 whenever this session isn't the one currently playing.
+    private var displayTime: Double {
+        if isScrubbing { return scrubTime }
+        return isPlayingThis ? appState.playbackTime : 0
+    }
 
     var body: some View {
         VStack(spacing: RTheme.Spacing.xs) {
