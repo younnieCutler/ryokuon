@@ -321,13 +321,12 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 let processes = try allAudioProcesses()
 
 if arguments.isEmpty {
-    print("apps currently playing audio:")
-    for process in processes where process.isPlaying {
-        print("  \(process.bundleID ?? "pid:\(process.pid)")  (\(process.displayName))")
-    }
-    print("\nall processes registered with CoreAudio:")
-    for process in processes.sorted(by: { $0.displayName < $1.displayName }) {
-        print("  \(process.isPlaying ? "♪" : " ") \(process.bundleID ?? "pid:\(process.pid)")")
+    print("obj    pid    out  bundleID / name")
+    for process in processes.sorted(by: { $0.pid < $1.pid }) {
+        print(String(format: "%-6d %-6d %-4@ %@",
+                     process.objectID, process.pid,
+                     (process.isPlaying ? "♪" : "-") as NSString,
+                     process.bundleID ?? "(no bundle) \(process.displayName)"))
     }
     print("\nusage: capture-test <bundleID|pid:N> [seconds]")
     exit(0)

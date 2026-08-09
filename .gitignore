@@ -1,6 +1,9 @@
 .DS_Store
 *.wav
-scratch/capture-test
-scratch/check-locales
-scratch/*.dSYM
+*.dSYM/
 .build/
+
+# scratch: keep sources, drop compiled binaries (no extension)
+scratch/*
+!scratch/*.swift
+!scratch/*.plist
