@@ -70,6 +70,21 @@ func crashDuring(selector: String, seconds: Double, storageRoot: URL) throws {
     // No capture.stop(), no session.state update — deliberately.
 }
 
+/// locale override lets this agent verify the pipeline against test audio
+/// recorded in a language other than the session's stored default (Q7:
+/// ja-JP default, but nothing stops recording/transcribing in ko-KR/en-US).
+func transcribe(sessionDirectory: URL, locale: String?) async throws {
+    let store = SessionStore(rootDirectory: sessionDirectory.deletingLastPathComponent())
+    let session = try store.load(from: sessionDirectory)
+    let words = try await Transcriber.transcribe(
+        sessionDirectory: sessionDirectory, locale: locale ?? session.language
+    ) { print($0) }
+    print("\n\(words.count) words -> \(sessionDirectory.appendingPathComponent("raw.json").path)")
+    for word in words {
+        print("\(word.startMs)|\(word.speaker)|\(word.confidence < 0.5 ? "?" : "")\(word.text)")
+    }
+}
+
 func recover(storageRoot: URL) throws {
     let store = SessionStore(rootDirectory: storageRoot)
     let recovered = store.recoverCrashedSessions()
@@ -105,6 +120,27 @@ if arguments.isEmpty {
             exit(1)
         }
         try recover(storageRoot: URL(fileURLWithPath: arguments[1]))
+    case "transcribe":
+        guard arguments.count >= 2 else {
+            print("usage: ryokuon transcribe <sessionDir> [locale]")
+            exit(1)
+        }
+        // `dispatchMain()`, not a semaphore: Speech.framework delivers XPC
+        // replies via the main dispatch queue, so blocking the main thread
+        // with `DispatchSemaphore.wait()` starves that queue and deadlocks
+        // forever (found by hanging + `sample` showing only 1 thread, i.e.
+        // the Task never got to run at all).
+        Task {
+            do {
+                try await transcribe(sessionDirectory: URL(fileURLWithPath: arguments[1]),
+                                     locale: arguments.count >= 3 ? arguments[2] : nil)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write("error: \(error)\n".data(using: .utf8)!)
+                exit(1)
+            }
+        }
+        dispatchMain()
     default:
         print("unknown command: \(arguments[0])")
         exit(1)
