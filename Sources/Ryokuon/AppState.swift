@@ -42,6 +42,26 @@ final class AppState {
         set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.language") }
     }
 
+    /// UI language — independent of `language` (the STT transcription
+    /// target). Needs to be an `@Observable`-tracked *stored* property, not
+    /// a computed pass-through to UserDefaults like `language` above: every
+    /// screen's `t(...)` calls read this, and a computed property reading
+    /// UserDefaults directly gives SwiftUI nothing to observe, so changing
+    /// it in Settings wouldn't re-render anything already on screen.
+    var appLanguage: String = UserDefaults.standard.string(forKey: "dev.ryokuon.appLanguage")
+        ?? Localization.defaultLanguage()
+    {
+        didSet { UserDefaults.standard.set(appLanguage, forKey: "dev.ryokuon.appLanguage") }
+    }
+
+    func t(_ key: L10nKey) -> String { Localization.string(key, language: appLanguage) }
+    func t(_ key: L10nKey, _ argument: String) -> String {
+        String(format: Localization.string(key, language: appLanguage), argument)
+    }
+    func t(_ key: L10nKey, _ argument: Int) -> String {
+        String(format: Localization.string(key, language: appLanguage), argument)
+    }
+
     private var capture: AudioCapture?
     private var watchdog: SilenceWatchdog?
     private var currentDirectory: URL?
@@ -53,7 +73,7 @@ final class AppState {
         // or touch the session list.
         let recovered = sessionStore.recoverCrashedSessions()
         if !recovered.isEmpty {
-            lastError = "이전 실행이 비정상 종료됨 — \(recovered.count)개 녹음 복구됨"
+            lastError = t(.errorRecovered, recovered.count)
         }
         reloadSessions()
     }
@@ -62,7 +82,7 @@ final class AppState {
         sessions = sessionStore.listSessions()
     }
 
-    /// Apps currently making sound, for the "다른 앱 선택" submenu.
+    /// Apps currently making sound, for the "pick another app" submenu.
     func playingProcesses() -> [AudioProcess] {
         (try? listAudioProcesses().filter(\.isPlaying)) ?? []
     }
@@ -71,7 +91,7 @@ final class AppState {
         guard let bundleID = lastTargetBundleID,
               let process = (try? listAudioProcesses())?.first(where: { $0.bundleID == bundleID })
         else {
-            lastError = "마지막으로 녹음한 앱(\(lastTargetDisplayName ?? "?"))이 지금 실행 중이 아님 — 다른 앱 선택 필요"
+            lastError = t(.errorLastTargetNotRunning, lastTargetDisplayName ?? "?")
             return
         }
         start(target: process)
@@ -80,7 +100,7 @@ final class AppState {
     func start(target: AudioProcess) {
         guard !isRecording else { return }
         guard permissions.allGranted else {
-            lastError = "권한 설정을 먼저 끝내야 함"
+            lastError = t(.errorPermissionsIncomplete)
             return
         }
 
@@ -119,7 +139,7 @@ final class AppState {
             lastError = nil
             isRecording = true
         } catch {
-            lastError = "녹음 시작 실패: \(error)"
+            lastError = t(.errorStartFailed, "\(error)")
         }
     }
 
@@ -131,7 +151,7 @@ final class AppState {
             session.durationSeconds = Double(capture.framesWritten) / Double(WAVWriter.sampleRate)
             try sessionStore.save(session, in: directory)
         } catch {
-            lastError = "녹음 종료 중 오류: \(error)"
+            lastError = t(.errorStopFailed, "\(error)")
         }
 
         self.capture = nil
@@ -152,7 +172,7 @@ final class AppState {
     func play(_ session: Session) {
         let directory = sessionStore.directory(for: session)
         guard let url = AudioCapture.audioFileURL(in: directory) else {
-            lastError = "재생할 오디오 파일 없음"
+            lastError = t(.errorNoAudioFile)
             return
         }
         do {
@@ -160,7 +180,7 @@ final class AppState {
             try player.play(url: url, meGain: session.gains.me, remoteGain: session.gains.remote)
             playingSessionID = session.id
         } catch {
-            lastError = "재생 실패: \(error)"
+            lastError = t(.errorPlayFailed, "\(error)")
         }
     }
 
@@ -198,7 +218,7 @@ final class AppState {
             try sessionStore.setRootDirectory(url)
             reloadSessions()
         } catch {
-            lastError = "저장 폴더 변경 실패: \(error)"
+            lastError = t(.errorStorageChangeFailed, "\(error)")
         }
     }
 
@@ -229,7 +249,7 @@ final class AppState {
     func transcribeSession(_ session: Session) {
         guard transcribingSessionID == nil else { return }
         transcribingSessionID = session.id
-        transcribeProgress = "시작"
+        transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
 
         Task {
@@ -245,12 +265,12 @@ final class AppState {
                     utterances, to: directory.appendingPathComponent("transcript.txt")
                 )
                 if FileManager.default.fileExists(atPath: directory.appendingPathComponent(AudioCapture.fileName).path) {
-                    transcribeProgress = "FLAC 변환 중"
+                    transcribeProgress = t(.progressConvertingFLAC)
                     _ = try FLACConverter.convert(sessionDirectory: directory)
                 }
                 lastError = nil
             } catch {
-                lastError = "전사 실패: \(error)"
+                lastError = t(.errorTranscribeFailed, "\(error)")
             }
             transcribingSessionID = nil
             transcribeProgress = nil
