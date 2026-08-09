@@ -14,10 +14,45 @@ struct AudioProcess: Identifiable {
 
     var id: pid_t { pid }
 
+    /// CoreAudio often reports the *helper* subprocess that actually
+    /// renders audio (`com.google.Chrome.helper`, `...helper.Renderer`),
+    /// not the main app — confirmed by a real session where this ended up
+    /// showing "com.google.Chrome.helper" as the target instead of
+    /// "Chrome". `NSRunningApplication` doesn't know about headless helper
+    /// processes (no Dock entry), so it returns nil for those and we'd
+    /// otherwise fall straight through to the raw bundle ID. The alias
+    /// table catches known apps' helper bundle IDs before that fallback.
     var displayName: String {
         NSRunningApplication(processIdentifier: pid)?.localizedName
+            ?? bundleID.flatMap(Self.friendlyName(forBundleID:))
             ?? bundleID
             ?? "pid \(pid)"
+    }
+
+    /// Matched by substring, not exact bundle ID, since helper processes
+    /// append suffixes like `.helper`, `.helper.Renderer`, `.helper.GPU`.
+    private static let knownAliases: [(needle: String, name: String)] = [
+        ("com.google.chrome", "Chrome"),
+        ("org.mozilla.firefox", "Firefox"),
+        ("com.microsoft.edgemac", "Edge"),
+        ("com.apple.safari", "Safari"),
+        ("us.zoom.xos", "Zoom"),
+        ("com.microsoft.teams", "Teams"),
+        ("com.tinyspeck.slackmacgap", "Slack"),
+        ("com.hnc.discord", "Discord"),
+        ("com.apple.facetime", "FaceTime"),
+        ("net.whatsapp.whatsapp", "WhatsApp"),
+        ("jp.naver.line.mac", "LINE"),
+        ("com.kakao.kakaotalkmac", "카카오톡"),
+        ("com.skype.skype", "Skype"),
+        ("com.google.meet", "Google Meet"),
+        ("com.electron.discord", "Discord"),
+        ("com.spotify.client", "Spotify"),
+    ]
+
+    static func friendlyName(forBundleID bundleID: String) -> String? {
+        let lowered = bundleID.lowercased()
+        return knownAliases.first { lowered.contains($0.needle) }?.name
     }
 }
 
