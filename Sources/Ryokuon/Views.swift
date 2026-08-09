@@ -95,6 +95,8 @@ struct SessionListView: View {
             VStack(spacing: 0) {
                 if appState.isRecording {
                     RecordingBanner(appState: appState)
+                } else {
+                    StartRecordingBar(appState: appState)
                 }
                 if let error = appState.lastError {
                     Text(error)
@@ -263,6 +265,36 @@ private struct GainSlider: View {
                 if !editing { onChange() }
             }
         }
+    }
+}
+
+/// Q17's one-click flow, in the main window rather than just the menu bar —
+/// last-used target if there is one (one click), or pick from apps
+/// currently making sound.
+private struct StartRecordingBar: View {
+    let appState: AppState
+
+    var body: some View {
+        HStack {
+            if let name = appState.lastTargetDisplayName {
+                Button("녹음 시작 — \(name)") { appState.startWithLastTarget() }
+            }
+            let processes = appState.playingProcesses()
+            if !processes.isEmpty {
+                Menu(appState.lastTargetDisplayName == nil ? "녹음 시작" : "다른 앱 선택") {
+                    ForEach(processes) { process in
+                        Button(process.displayName) { appState.start(target: process) }
+                    }
+                }
+            } else if appState.lastTargetDisplayName == nil {
+                Text("소리 내는 앱이 없음 — 녹음할 앱에서 소리를 먼저 재생해줘")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.2))
     }
 }
 
