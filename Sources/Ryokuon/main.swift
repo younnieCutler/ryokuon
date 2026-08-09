@@ -85,6 +85,20 @@ func transcribe(sessionDirectory: URL, locale: String?) async throws {
     }
 }
 
+/// Reads raw.json (step 3's output) and writes transcript.txt (the compact
+/// format AI reads). Separate from `transcribe` so re-tuning the merge
+/// (gap threshold, confidence cutoff) doesn't require re-running STT.
+func build(sessionDirectory: URL) throws {
+    let data = try Data(contentsOf: sessionDirectory.appendingPathComponent("raw.json"))
+    let words = try JSONDecoder().decode([TranscriptWord].self, from: data)
+    let utterances = TranscriptBuilder.build(from: words)
+    try TranscriptBuilder.writeTranscript(utterances, to: sessionDirectory.appendingPathComponent("transcript.txt"))
+    print("\(utterances.count) utterances -> \(sessionDirectory.appendingPathComponent("transcript.txt").path)")
+    for utterance in utterances {
+        print(TranscriptBuilder.format(utterance))
+    }
+}
+
 func recover(storageRoot: URL) throws {
     let store = SessionStore(rootDirectory: storageRoot)
     let recovered = store.recoverCrashedSessions()
@@ -141,6 +155,12 @@ if arguments.isEmpty {
             }
         }
         dispatchMain()
+    case "build":
+        guard arguments.count >= 2 else {
+            print("usage: ryokuon build <sessionDir>")
+            exit(1)
+        }
+        try build(sessionDirectory: URL(fileURLWithPath: arguments[1]))
     default:
         print("unknown command: \(arguments[0])")
         exit(1)

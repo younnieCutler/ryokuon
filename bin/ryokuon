@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# transcript.txt is one utterance per line (startMs|speaker|text), so grep
+# and awk already do everything this needs — no reason to build and sign a
+# separate Swift binary for it (Q8).
+set -euo pipefail
+
+# ponytail: env var override only, no UserDefaults read. The app's storage
+# folder setting (Q9) lives in UserDefaults, which a shell script can't read
+# without shelling out to `defaults`. Add that if the mismatch ever bites.
+ROOT="${RYOKUON_ROOT:-$HOME/Documents/ryokuon}"
+
+usage() {
+    cat <<EOF
+usage: ryokuon list
+       ryokuon show <session>
+       ryokuon search <session> <keyword>
+       ryokuon range <session> <startMs> <endMs>
+EOF
+    exit 1
+}
+
+require_transcript() {
+    local session="$1"
+    local path="$ROOT/$session/transcript.txt"
+    if [[ ! -f "$path" ]]; then
+        echo "no transcript.txt for session '$session' (looked in $path)" >&2
+        exit 1
+    fi
+    echo "$path"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    list)
+        [[ -d "$ROOT" ]] && ls -1 "$ROOT" | sort -r
+        ;;
+    show)
+        [[ $# -ge 2 ]] || usage
+        cat "$(require_transcript "$2")"
+        ;;
+    search)
+        [[ $# -ge 3 ]] || usage
+        grep -n -B2 -A2 -- "$3" "$(require_transcript "$2")" || true
+        ;;
+    range)
+        [[ $# -ge 4 ]] || usage
+        awk -F'|' -v start="$3" -v end="$4" \
+            '{ ts = $1 + 0; if (ts >= start && ts <= end) print }' \
+            "$(require_transcript "$2")"
+        ;;
+    *)
+        usage
+        ;;
+esac
