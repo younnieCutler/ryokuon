@@ -134,7 +134,7 @@ struct RyokuonSplitView: View {
         }
         .onAppear { appState.reloadSessions() }
         .toolbar {
-            ToolbarItem(placement: .navigation) {
+            ToolbarItem {
                 Button(isEditing ? appState.t(.doneButton) : appState.t(.editButton)) {
                     isEditing.toggle()
                 }
@@ -253,10 +253,11 @@ private struct SessionRow: View {
     var body: some View {
         HStack(spacing: RTheme.Spacing.sm) {
             if isEditing {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onToggle)
+                Button(action: onToggle) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.plain)
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: RTheme.Spacing.xs) {
