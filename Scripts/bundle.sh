@@ -6,8 +6,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IDENTITY="${RYOKUON_SIGN_IDENTITY:-Apple Development: ehrktm090@gmail.com (7TFR357KWQ)}"
 CONFIG="${1:-debug}"
+
+if [ -z "${RYOKUON_SIGN_IDENTITY:-}" ]; then
+  echo "error: RYOKUON_SIGN_IDENTITY not set — export it to your codesign identity" >&2
+  echo '  e.g. export RYOKUON_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)"' >&2
+  echo "  find yours with: security find-identity -v -p codesigning" >&2
+  exit 1
+fi
+IDENTITY="$RYOKUON_SIGN_IDENTITY"
 
 cd "$ROOT"
 swift build -c "$CONFIG"
