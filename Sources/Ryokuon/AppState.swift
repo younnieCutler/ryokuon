@@ -8,6 +8,7 @@ import SwiftUI
 final class AppState {
     let sessionStore = SessionStore()
     let permissions = PermissionsManager()
+    let player = Player()
 
     private(set) var isRecording = false
     private(set) var meLevelDB: Float = -.infinity
@@ -134,6 +135,44 @@ final class AppState {
         meLevelDB = -.infinity
         remoteLevelDB = -.infinity
         reloadSessions()
+    }
+
+    // MARK: - Playback (step 5, Q4)
+
+    private(set) var playingSessionID: String?
+
+    func play(_ session: Session) {
+        let directory = sessionStore.directory(for: session)
+        guard let url = AudioCapture.audioFileURL(in: directory) else {
+            lastError = "재생할 오디오 파일 없음"
+            return
+        }
+        do {
+            player.onFinish = { [weak self] in self?.playingSessionID = nil }
+            try player.play(url: url, meGain: session.gains.me, remoteGain: session.gains.remote)
+            playingSessionID = session.id
+        } catch {
+            lastError = "재생 실패: \(error)"
+        }
+    }
+
+    func stopPlayback() {
+        player.stop()
+        playingSessionID = nil
+    }
+
+    /// Q4: gain is a stored value applied at playback/STT time, not a live
+    /// monitoring knob — this just persists it. Playing again (or the next
+    /// transcription run) picks up the new value; the audio file itself is
+    /// never touched.
+    func setGains(for session: Session, me: Double, remote: Double) {
+        var updated = session
+        updated.gains = .init(me: me, remote: remote)
+        let directory = sessionStore.directory(for: session)
+        try? sessionStore.save(updated, in: directory)
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index] = updated
+        }
     }
 }
 

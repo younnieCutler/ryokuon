@@ -77,11 +77,20 @@ func transcribe(sessionDirectory: URL, locale: String?) async throws {
     let store = SessionStore(rootDirectory: sessionDirectory.deletingLastPathComponent())
     let session = try store.load(from: sessionDirectory)
     let words = try await Transcriber.transcribe(
-        sessionDirectory: sessionDirectory, locale: locale ?? session.language
+        sessionDirectory: sessionDirectory, locale: locale ?? session.language,
+        meGain: session.gains.me, remoteGain: session.gains.remote
     ) { print($0) }
     print("\n\(words.count) words -> \(sessionDirectory.appendingPathComponent("raw.json").path)")
     for word in words {
         print("\(word.startMs)|\(word.speaker)|\(word.confidence < 0.5 ? "?" : "")\(word.text)")
+    }
+
+    // Q3: call.wav isn't needed once it's transcribed — convert to FLAC and
+    // drop the original. Only if call.wav is actually still there (running
+    // `transcribe` again on an already-converted session is a no-op here).
+    if FileManager.default.fileExists(atPath: sessionDirectory.appendingPathComponent(AudioCapture.fileName).path) {
+        let flacURL = try FLACConverter.convert(sessionDirectory: sessionDirectory)
+        print("converted -> \(flacURL.path)")
     }
 }
 

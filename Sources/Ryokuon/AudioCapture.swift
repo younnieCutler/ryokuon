@@ -53,6 +53,19 @@ final class AudioCapture {
     }
     var framesWritten: Int { writer.framesWritten }
     static let fileName = "call.wav"
+    static let flacFileName = "call.flac"
+
+    /// call.wav until step 5's FLAC conversion runs post-transcription, then
+    /// call.flac (the WAV is deleted once the FLAC is verified — Q3). Any
+    /// code that needs to read the audio back (Transcriber, Player) should
+    /// go through this instead of assuming which one exists.
+    static func audioFileURL(in directory: URL) -> URL? {
+        let wav = directory.appendingPathComponent(fileName)
+        if FileManager.default.fileExists(atPath: wav.path) { return wav }
+        let flac = directory.appendingPathComponent(flacFileName)
+        if FileManager.default.fileExists(atPath: flac.path) { return flac }
+        return nil
+    }
 
     init(process: AudioProcess, outputDirectory: URL) throws {
         device = try CaptureDevice(tapping: process)

@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 import Speech
@@ -25,7 +26,11 @@ enum TranscriberError: Error {
 /// SpeechAnalyzer instances competing for the ANE at once is wasteful for a
 /// batch job with no latency requirement).
 enum Transcriber {
+    /// Q4: the saved gain is applied both at playback (Player.swift) and
+    /// here at STT time — a track recorded too quiet should get a real shot
+    /// at being recognized, not just sound louder on replay.
     static func transcribe(sessionDirectory: URL, locale localeID: String,
+                            meGain: Double = 1.0, remoteGain: Double = 1.0,
                             onProgress: ((String) -> Void)? = nil) async throws -> [TranscriptWord] {
         let wanted = Locale(identifier: localeID)
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else {
@@ -46,8 +51,12 @@ enum Transcriber {
 
         try await ensureInstalled(modules: [meTranscriber, remoteTranscriber], onProgress: onProgress)
 
-        let callURL = sessionDirectory.appendingPathComponent(AudioCapture.fileName)
+        guard let callURL = AudioCapture.audioFileURL(in: sessionDirectory) else {
+            throw TranscriberError.unexpectedFileFormat
+        }
         let (meChannel, remoteChannel) = try readStereoChannels(callURL)
+        applyGain(Float(meGain), to: meChannel)
+        applyGain(Float(remoteGain), to: remoteChannel)
 
         onProgress?("transcribing me track")
         let meWords = try await run(meTranscriber, buffer: meChannel, speaker: "M")
@@ -66,6 +75,12 @@ enum Transcriber {
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: modules) else { return }
         onProgress?("downloading speech model (\(Int(request.progress.fractionCompleted * 100))%)")
         try await request.downloadAndInstall()
+    }
+
+    private static func applyGain(_ gain: Float, to buffer: AVAudioPCMBuffer) {
+        guard gain != 1.0, let channel = buffer.floatChannelData?[0] else { return }
+        var gain = gain
+        vDSP_vsmul(channel, 1, &gain, channel, 1, vDSP_Length(buffer.frameLength))
     }
 
     /// `call.wav` is a stereo 16kHz Int16 file (L=me, R=remote). AVAudioFile

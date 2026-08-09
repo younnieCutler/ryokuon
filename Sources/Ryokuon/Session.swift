@@ -1,10 +1,10 @@
 import Foundation
 
 /// One recording: a directory under the storage root holding session.json,
-/// me.wav/remote.wav (or .flac after step 5's transcription pass), and
-/// eventually transcript.txt + raw.json (step 4). The folder name is the
-/// stable ID (Q10) — `displayName` is what the user sees and can rename
-/// without touching any file paths.
+/// call.wav (call.flac after step 5's post-transcription conversion), and
+/// raw.json + transcript.txt (step 3/4). The folder name is the stable ID
+/// (Q10) — `displayName` is what the user sees and can rename without
+/// touching any file paths.
 struct Session: Codable {
     enum State: String, Codable {
         case recording
@@ -132,6 +132,13 @@ final class SessionStore {
             return date
         }
         return try decoder.decode(Session.self, from: data)
+    }
+
+    /// Folder name is the session ID (Q10) — this is the one place that
+    /// fact turns into a path, so callers (Player, Transcriber CLI hookup)
+    /// don't each reconstruct it themselves.
+    func directory(for session: Session) -> URL {
+        rootDirectory.appendingPathComponent(session.id, isDirectory: true)
     }
 
     func listSessions() -> [Session] {
