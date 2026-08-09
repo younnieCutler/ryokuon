@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withObservationTracking {
             _ = appState.isRecording
             _ = appState.silenceWarning
+            _ = appState.transcribingSessionID
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
@@ -42,12 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshStatusItem() {
         let symbol: String
-        if appState.isRecording {
-            symbol = "record.circle.fill"
-        } else if appState.silenceWarning != nil {
-            symbol = "exclamationmark.triangle.fill"
-        } else {
-            symbol = "waveform"
+        switch appState.runState {
+        case .recording: symbol = "record.circle.fill"
+        case .processing: symbol = "arrow.triangle.2.circlepath"
+        case .ready: symbol = appState.silenceWarning != nil ? "exclamationmark.triangle.fill" : "waveform"
         }
         statusItem?.button?.image = Self.statusImage(symbol: symbol)
         statusItem?.menu = buildMenu()
@@ -56,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withObservationTracking {
             _ = appState.isRecording
             _ = appState.silenceWarning
+            _ = appState.transcribingSessionID
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
@@ -75,20 +75,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
 
+        // Status panel: state, elapsed time, ME/REMOTE meters, current
+        // mic/capture target. A custom NSMenuItem view (NSHostingView) is
+        // the only way to get live SwiftUI content — plain menu items are
+        // static text, and MenuBarExtra doesn't render on this OS build.
+        let panelItem = NSMenuItem()
+        panelItem.view = NSHostingView(rootView: MenuBarPanelView(appState: appState).frame(width: 220))
+        menu.addItem(panelItem)
+        menu.addItem(.separator())
+
         if appState.isRecording {
-            menu.addItem(withTitle: "녹음 종료", action: #selector(stopRecording), keyEquivalent: "")
+            menu.addItem(withTitle: appState.t(.recordingStop), action: #selector(stopRecording), keyEquivalent: "")
                 .target = self
         } else if let name = appState.lastTargetDisplayName {
-            menu.addItem(withTitle: "녹음 시작 — \(name)", action: #selector(startWithLastTarget), keyEquivalent: "")
+            menu.addItem(withTitle: appState.t(.startRecordingWithName, name),
+                        action: #selector(startWithLastTarget), keyEquivalent: "")
                 .target = self
         }
 
-        let pickerItem = NSMenuItem(title: "다른 앱 선택", action: nil, keyEquivalent: "")
+        let pickerItem = NSMenuItem(title: appState.t(.pickAnotherApp), action: nil, keyEquivalent: "")
         pickerItem.isEnabled = !appState.isRecording
         let submenu = NSMenu()
         let processes = appState.playingProcesses()
         if processes.isEmpty {
-            submenu.addItem(withTitle: "지금 소리 내는 앱 없음", action: nil, keyEquivalent: "")
+            submenu.addItem(withTitle: appState.t(.menuNoSoundApps), action: nil, keyEquivalent: "")
         } else {
             for process in processes {
                 let entry = submenu.addItem(withTitle: process.displayName,
@@ -102,15 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        if let warning = appState.silenceWarning {
-            menu.addItem(withTitle: warning, action: nil, keyEquivalent: "")
-        }
-
-        menu.addItem(withTitle: "세션 목록 열기", action: #selector(openSessionWindow), keyEquivalent: "")
+        menu.addItem(withTitle: appState.t(.menuOpenSessions), action: #selector(openSessionWindow), keyEquivalent: "")
             .target = self
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: appState.t(.menuQuit), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 
         return menu
     }
@@ -128,5 +134,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for window in NSApp.windows where window.identifier?.rawValue == "main" {
             window.makeKeyAndOrderFront(nil)
         }
+    }
+}
+
+/// Menu bar status panel — state / duration / ME·REMOTE meters / current
+/// mic & capture target, all in one glance without opening the main
+/// window, per the brief's menu bar spec.
+private struct MenuBarPanelView: View {
+    let appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if appState.runState == .recording { RecordingDot() }
+                Text(appState.runStateText()).font(.headline)
+                Spacer()
+                if appState.isRecording {
+                    Text(formattedDuration(appState.recordingElapsed))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if appState.isRecording {
+                HStack(spacing: 12) {
+                    LevelMeter(label: appState.t(.gainMe), tint: .accentColor, db: appState.meLevelDB)
+                    LevelMeter(label: appState.t(.gainRemote), tint: .secondary, db: appState.remoteLevelDB)
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 4) {
+                Image(systemName: "mic").foregroundStyle(.secondary)
+                Text(appState.t(.currentMicLabel)).foregroundStyle(.secondary)
+                Spacer()
+                Text(appState.currentMicrophoneName).lineLimit(1).truncationMode(.middle)
+            }
+            .font(.caption)
+
+            HStack(spacing: 4) {
+                Image(systemName: "app.badge").foregroundStyle(.secondary)
+                Text(appState.t(.currentAppLabel)).foregroundStyle(.secondary)
+                Spacer()
+                Text(appState.lastTargetDisplayName ?? "—").lineLimit(1).truncationMode(.middle)
+            }
+            .font(.caption)
+        }
+        .padding(10)
     }
 }

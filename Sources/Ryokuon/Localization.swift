@@ -41,6 +41,10 @@ enum L10nKey {
     case errorStorageChangeFailed, errorTranscribeFailed // %@ = error description
     case errorNoAudioFile
     case progressStarting, progressConvertingFLAC
+    case statusReady, statusRecording, statusProcessing
+    case currentMicLabel, currentAppLabel
+    case searchPlaceholder
+    case detailNoSelection
 }
 
 enum Localization {
@@ -61,6 +65,13 @@ enum Localization {
 
     private static let table: [String: [L10nKey: String]] = [
         "ko": [
+            .statusReady: "준비됨",
+            .statusRecording: "녹음 중",
+            .statusProcessing: "처리 중",
+            .currentMicLabel: "마이크",
+            .currentAppLabel: "캡처 대상",
+            .searchPlaceholder: "검색",
+            .detailNoSelection: "세션을 선택하세요",
             .onboardingTitle: "Ryokuon 시작하기",
             .onboardingSubtitle: "녹음을 시작하기 전에 세 가지 권한이 필요해요.",
             .permMicTitle: "마이크",
@@ -115,6 +126,13 @@ enum Localization {
             .progressConvertingFLAC: "FLAC 변환 중",
         ],
         "ja": [
+            .statusReady: "準備完了",
+            .statusRecording: "録音中",
+            .statusProcessing: "処理中",
+            .currentMicLabel: "マイク",
+            .currentAppLabel: "キャプチャ対象",
+            .searchPlaceholder: "検索",
+            .detailNoSelection: "セッションを選択してください",
             .onboardingTitle: "Ryokuon を始める",
             .onboardingSubtitle: "録音を始める前に3つの権限が必要です。",
             .permMicTitle: "マイク",
@@ -169,6 +187,13 @@ enum Localization {
             .progressConvertingFLAC: "FLAC変換中",
         ],
         "en": [
+            .statusReady: "Ready",
+            .statusRecording: "Recording",
+            .statusProcessing: "Processing",
+            .currentMicLabel: "Microphone",
+            .currentAppLabel: "Capturing",
+            .searchPlaceholder: "Search",
+            .detailNoSelection: "Select a session",
             .onboardingTitle: "Get Started with Ryokuon",
             .onboardingSubtitle: "Three permissions are needed before you can start recording.",
             .permMicTitle: "Microphone",

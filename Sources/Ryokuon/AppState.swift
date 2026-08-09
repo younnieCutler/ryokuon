@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import SwiftUI
 
@@ -62,11 +63,37 @@ final class AppState {
         String(format: Localization.string(key, language: appLanguage), argument)
     }
 
+    enum RunState { case ready, recording, processing }
+
+    /// For the "Ready / Recording / Processing" status the menu bar and
+    /// window both need — a session is "processing" the moment its
+    /// transcription pipeline (step 3-5) is running.
+    var runState: RunState {
+        if isRecording { return .recording }
+        if transcribingSessionID != nil { return .processing }
+        return .ready
+    }
+
+    func runStateText() -> String {
+        switch runState {
+        case .ready: t(.statusReady)
+        case .recording: t(.statusRecording)
+        case .processing: t(.statusProcessing)
+        }
+    }
+
     private var capture: AudioCapture?
     private var watchdog: SilenceWatchdog?
     private var currentDirectory: URL?
     private var currentSession: Session?
     private var lastTickDate: Date?
+
+    /// Elapsed recording time, polled the same way `playbackTime` is —
+    /// drives the duration readout in the menu bar and the window's
+    /// recording indicator.
+    private(set) var recordingElapsed: TimeInterval = 0
+    private var recordingStartDate: Date?
+    private var recordingTimer: Timer?
 
     init() {
         // Q11: repair anything a crash left behind before the user can see
@@ -80,6 +107,14 @@ final class AppState {
 
     func reloadSessions() {
         sessions = sessionStore.listSessions()
+    }
+
+    /// System default input device's name, for display only ("현재 선택된
+    /// 마이크"). Read-only query — doesn't touch `CaptureDevice`/
+    /// `AudioCapture`, which resolve their own input at capture start
+    /// exactly as before; this is purely a label.
+    var currentMicrophoneName: String {
+        AVCaptureDevice.default(for: .audio)?.localizedName ?? "—"
     }
 
     /// Apps currently making sound, for the "pick another app" submenu.
@@ -138,9 +173,24 @@ final class AppState {
             silenceWarning = nil
             lastError = nil
             isRecording = true
+            recordingStartDate = Date()
+            recordingElapsed = 0
+            startRecordingTimer()
         } catch {
             lastError = t(.errorStartFailed, "\(error)")
         }
+    }
+
+    private func startRecordingTimer() {
+        recordingTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let start = self.recordingStartDate else { return }
+                self.recordingElapsed = Date().timeIntervalSince(start)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        recordingTimer = timer
     }
 
     func stop() {
@@ -162,31 +212,70 @@ final class AppState {
         isRecording = false
         meLevelDB = -.infinity
         remoteLevelDB = -.infinity
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingStartDate = nil
+        recordingElapsed = 0
         reloadSessions()
     }
 
     // MARK: - Playback (step 5, Q4)
 
     private(set) var playingSessionID: String?
+    /// Current position within the playing file, in seconds — polled from
+    /// `player.currentTime` on a timer since `Player` isn't itself
+    /// `@Observable`. Drives the transcript's current-line highlight and
+    /// the compact player's position readout.
+    private(set) var playbackTime: TimeInterval = 0
+    private var playbackTimer: Timer?
 
-    func play(_ session: Session) {
+    var playbackDuration: TimeInterval { player.duration }
+
+    func play(_ session: Session, from: TimeInterval = 0) {
         let directory = sessionStore.directory(for: session)
         guard let url = AudioCapture.audioFileURL(in: directory) else {
             lastError = t(.errorNoAudioFile)
             return
         }
         do {
-            player.onFinish = { [weak self] in self?.playingSessionID = nil }
-            try player.play(url: url, meGain: session.gains.me, remoteGain: session.gains.remote)
+            player.onFinish = { [weak self] in
+                self?.playingSessionID = nil
+                self?.stopPlaybackTimer()
+            }
+            try player.play(url: url, from: from, meGain: session.gains.me, remoteGain: session.gains.remote)
             playingSessionID = session.id
+            playbackTime = from
+            startPlaybackTimer()
         } catch {
             lastError = t(.errorPlayFailed, "\(error)")
         }
     }
 
+    /// Jumps playback to a transcript line's timestamp — reuses `play(_:from:)`,
+    /// which is cheap here since `Player` caches the decoded buffer per URL
+    /// and only re-reads from disk when the URL changes.
+    func seekPlayback(_ session: Session, toSeconds seconds: TimeInterval) {
+        play(session, from: seconds)
+    }
+
     func stopPlayback() {
         player.stop()
         playingSessionID = nil
+        stopPlaybackTimer()
+    }
+
+    private func startPlaybackTimer() {
+        playbackTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.playbackTime = self?.player.currentTime ?? 0 }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackTimer = timer
+    }
+
+    private func stopPlaybackTimer() {
+        playbackTimer?.invalidate()
+        playbackTimer = nil
     }
 
     /// Q4: gain is a stored value applied at playback/STT time, not a live
