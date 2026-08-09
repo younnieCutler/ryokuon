@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -28,6 +29,13 @@ final class AppState {
         get { UserDefaults.standard.string(forKey: "dev.ryokuon.lastTargetDisplayName") }
         set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.lastTargetDisplayName") }
     }
+
+    /// Q7: 일본어 기본, 한국어·영어 지원 — 0단계에서 이 세 로케일만 실제로 검증했으므로
+    /// 선택지도 그만큼만 노출한다(SpeechTranscriber가 지원하는 다른 로케일도 있지만
+    /// 검증 안 된 걸 고를 수 있게 하면 "일본어인 줄 알았는데 안 됨" 같은 혼란만 생긴다).
+    static let supportedLanguages: [(id: String, label: String)] = [
+        ("ja-JP", "일본어"), ("ko-KR", "한국어"), ("en-US", "영어"),
+    ]
 
     var language: String {
         get { UserDefaults.standard.string(forKey: "dev.ryokuon.language") ?? "ja-JP" }
@@ -172,6 +180,81 @@ final class AppState {
         try? sessionStore.save(updated, in: directory)
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[index] = updated
+        }
+    }
+
+    // MARK: - Settings (Q9, Q10)
+
+    /// Q9: "저장 폴더 바꾸기" — only affects where new sessions go, existing
+    /// ones stay put (SessionStore.setRootDirectory's own contract).
+    func changeStorageFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = sessionStore.rootDirectory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try sessionStore.setRootDirectory(url)
+            reloadSessions()
+        } catch {
+            lastError = "저장 폴더 변경 실패: \(error)"
+        }
+    }
+
+    /// Q10: renaming only touches session.json — the folder name (the
+    /// stable ID) never changes.
+    func rename(_ session: Session, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != session.displayName else { return }
+        var updated = session
+        updated.displayName = trimmed
+        let directory = sessionStore.directory(for: session)
+        try? sessionStore.save(updated, in: directory)
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index] = updated
+        }
+    }
+
+    // MARK: - Transcription (steps 3-5, run from the GUI)
+
+    private(set) var transcribingSessionID: String?
+    private(set) var transcribeProgress: String?
+
+    /// Runs the full post-recording pipeline a session needs before it's
+    /// actually useful: word-level STT (step 3) -> merged transcript.txt
+    /// (step 4) -> FLAC conversion + original deletion (step 5, Q3). Steps
+    /// 3-5 were only reachable via CLI dev commands until now — this is the
+    /// GUI entry point a normal user actually has.
+    func transcribeSession(_ session: Session) {
+        guard transcribingSessionID == nil else { return }
+        transcribingSessionID = session.id
+        transcribeProgress = "시작"
+        let directory = sessionStore.directory(for: session)
+
+        Task {
+            do {
+                let words = try await Transcriber.transcribe(
+                    sessionDirectory: directory, locale: session.language,
+                    meGain: session.gains.me, remoteGain: session.gains.remote
+                ) { [weak self] message in
+                    Task { @MainActor in self?.transcribeProgress = message }
+                }
+                let utterances = TranscriptBuilder.build(from: words)
+                try TranscriptBuilder.writeTranscript(
+                    utterances, to: directory.appendingPathComponent("transcript.txt")
+                )
+                if FileManager.default.fileExists(atPath: directory.appendingPathComponent(AudioCapture.fileName).path) {
+                    transcribeProgress = "FLAC 변환 중"
+                    _ = try FLACConverter.convert(sessionDirectory: directory)
+                }
+                lastError = nil
+            } catch {
+                lastError = "전사 실패: \(error)"
+            }
+            transcribingSessionID = nil
+            transcribeProgress = nil
+            reloadSessions()
         }
     }
 }

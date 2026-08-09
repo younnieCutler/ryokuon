@@ -88,6 +88,7 @@ private struct PermissionRow: View {
 
 struct SessionListView: View {
     let appState: AppState
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -123,7 +124,56 @@ struct SessionListView: View {
                     SessionDetailView(appState: appState, session: session)
                 }
             }
+            .toolbar {
+                ToolbarItem { Button("설정") { showingSettings = true } }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsSheetView(appState: appState)
+            }
         }
+    }
+}
+
+/// Q7(언어) + Q9(저장 폴더) — 둘 다 새 녹음부터 적용되고 기존 세션은 그대로 둔다는 게
+/// 원래 설계 그대로(AppState.language/changeStorageFolder의 계약).
+struct SettingsSheetView: View {
+    let appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var language: String
+
+    init(appState: AppState) {
+        self.appState = appState
+        _language = State(initialValue: appState.language)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("설정").font(.title2.bold())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("전사 언어 (새 녹음부터 적용)").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $language) {
+                    ForEach(AppState.supportedLanguages, id: \.id) { option in
+                        Text(option.label).tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .onChange(of: language) { _, newValue in appState.language = newValue }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("저장 폴더").font(.caption).foregroundStyle(.secondary)
+                Text(appState.sessionStore.rootDirectory.path)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                Button("폴더 변경") { appState.changeStorageFolder() }
+            }
+
+            Spacer()
+            Button("닫기") { dismiss() }
+        }
+        .padding(24)
+        .frame(minWidth: 360, minHeight: 260)
     }
 }
 
@@ -136,19 +186,25 @@ struct SessionDetailView: View {
     @State private var meGain: Double
     @State private var remoteGain: Double
     @State private var transcript: String?
+    @State private var displayName: String
 
     init(appState: AppState, session: Session) {
         self.appState = appState
         self.session = session
         _meGain = State(initialValue: session.gains.me)
         _remoteGain = State(initialValue: session.gains.remote)
+        _displayName = State(initialValue: session.displayName)
     }
 
     private var isPlayingThis: Bool { appState.playingSessionID == session.id }
+    private var isTranscribingThis: Bool { appState.transcribingSessionID == session.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(session.displayName).font(.title2.bold())
+            TextField("세션 이름", text: $displayName)
+                .font(.title2.bold())
+                .textFieldStyle(.plain)
+                .onSubmit { appState.rename(session, to: displayName) }
             Text("\(session.targetDisplayName) · \(Int(session.durationSeconds))초 · \(session.language)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -164,6 +220,14 @@ struct SessionDetailView: View {
             GainSlider(label: "나", value: $meGain) { appState.setGains(for: session, me: meGain, remote: remoteGain) }
             GainSlider(label: "상대", value: $remoteGain) { appState.setGains(for: session, me: meGain, remote: remoteGain) }
 
+            HStack {
+                Button(transcript == nil ? "전사하기" : "다시 전사하기") { appState.transcribeSession(session) }
+                    .disabled(isTranscribingThis)
+                if isTranscribingThis, let progress = appState.transcribeProgress {
+                    Text(progress).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             if let transcript {
                 ScrollView {
                     Text(transcript).font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
@@ -176,6 +240,9 @@ struct SessionDetailView: View {
         }
         .padding(24)
         .onAppear { loadTranscript() }
+        .onChange(of: appState.transcribingSessionID) { _, newValue in
+            if newValue == nil { loadTranscript() } // just finished (this or another session)
+        }
     }
 
     private func loadTranscript() {

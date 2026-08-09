@@ -31,7 +31,7 @@ enum Transcriber {
     /// at being recognized, not just sound louder on replay.
     static func transcribe(sessionDirectory: URL, locale localeID: String,
                             meGain: Double = 1.0, remoteGain: Double = 1.0,
-                            onProgress: ((String) -> Void)? = nil) async throws -> [TranscriptWord] {
+                            onProgress: (@Sendable (String) -> Void)? = nil) async throws -> [TranscriptWord] {
         let wanted = Locale(identifier: localeID)
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else {
             throw TranscriberError.unsupportedLocale(localeID)
@@ -69,7 +69,7 @@ enum Transcriber {
         return words
     }
 
-    private static func ensureInstalled(modules: [any SpeechModule], onProgress: ((String) -> Void)?) async throws {
+    private static func ensureInstalled(modules: [any SpeechModule], onProgress: (@Sendable (String) -> Void)?) async throws {
         let status = await AssetInventory.status(forModules: modules)
         guard status != .installed else { return }
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: modules) else { return }
