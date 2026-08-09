@@ -342,7 +342,7 @@ struct SettingsSheetView: View {
                 Section {
                     Picker(appState.t(.settingsTranscriptionLanguage), selection: $transcriptionLanguage) {
                         ForEach(AppState.supportedLanguages, id: \.id) { option in
-                            Text(option.label).tag(option.id)
+                            Text(appState.t(option.labelKey)).tag(option.id)
                         }
                     }
                     .onChange(of: transcriptionLanguage) { _, newValue in appState.language = newValue }

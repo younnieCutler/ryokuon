@@ -34,8 +34,8 @@ final class AppState {
     /// Q7: 일본어 기본, 한국어·영어 지원 — 0단계에서 이 세 로케일만 실제로 검증했으므로
     /// 선택지도 그만큼만 노출한다(SpeechTranscriber가 지원하는 다른 로케일도 있지만
     /// 검증 안 된 걸 고를 수 있게 하면 "일본어인 줄 알았는데 안 됨" 같은 혼란만 생긴다).
-    static let supportedLanguages: [(id: String, label: String)] = [
-        ("ja-JP", "일본어"), ("ko-KR", "한국어"), ("en-US", "영어"),
+    static let supportedLanguages: [(id: String, labelKey: L10nKey)] = [
+        ("ja-JP", .langJa), ("ko-KR", .langKo), ("en-US", .langEn),
     ]
 
     var language: String {
