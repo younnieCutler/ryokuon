@@ -58,11 +58,49 @@ struct WAVWriterTests {
         try WAVWriter.repairHeader(at: url)
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
+
+    /// The app writes one stereo file (L=me, R=remote) instead of two mono
+    /// files — repair must use the right channel count or the recomputed
+    /// frame count (and therefore duration) comes out 2x wrong.
+    @Test func stereoRoundTrip() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let writer = try WAVWriter(url: url, channels: 2)
+        let interleaved: [Int16] = (0 ..< 32000).map { Int16($0 % 100) } // 16000 frames stereo
+        try writer.append(interleaved)
+        #expect(writer.framesWritten == 16000)
+        try writer.finish()
+
+        let data = try Data(contentsOf: url)
+        #expect(readUInt16LE(data, at: 22) == 2, "channel count in header")
+        #expect(readUInt32LE(data, at: 40) == UInt32(interleaved.count * 2))
+    }
+
+    @Test func stereoCrashRecoveryUsesCorrectChannelCount() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let writer = try WAVWriter(url: url, channels: 2)
+        try writer.append([Int16](repeating: 0, count: 32000)) // 16000 frames stereo, no finish()
+
+        try WAVWriter.repairHeader(at: url, channels: 2)
+
+        let data = try Data(contentsOf: url)
+        #expect(readUInt32LE(data, at: 40) == 32000 * 2)
+    }
 }
 
 private func readUInt32LE(_ data: Data, at offset: Int) -> UInt32 {
     let bytes = data[data.startIndex + offset ..< data.startIndex + offset + 4]
     return bytes.withUnsafeBytes { $0.load(as: UInt32.self) }
+}
+
+private func readUInt16LE(_ data: Data, at offset: Int) -> UInt16 {
+    let bytes = data[data.startIndex + offset ..< data.startIndex + offset + 2]
+    return bytes.withUnsafeBytes { $0.load(as: UInt16.self) }
 }
 
 private func wavInfo(_ url: URL) throws -> (frameCount: Int, sampleRate: UInt32) {

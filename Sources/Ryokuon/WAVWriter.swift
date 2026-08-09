@@ -7,7 +7,9 @@ private extension Data {
     }
 }
 
-/// Streaming mono 16kHz/16-bit WAV writer with a crash-safe header.
+/// Streaming 16kHz/16-bit WAV writer with a crash-safe header. Mono or
+/// stereo — the app writes one stereo file (left = me, right = remote; see
+/// AudioCapture) but the writer itself doesn't care.
 ///
 /// The header is written with `dataBytes: 0` up front and only patched to the
 /// real size on `finish()`. If the process dies mid-recording, the header
@@ -19,18 +21,23 @@ final class WAVWriter {
     private static let headerSize = 44
 
     let url: URL
+    let channels: UInt16
     private let handle: FileHandle
     private var dataBytesWritten: UInt32 = 0
     private var bytesSinceSync = 0
-    private static let syncEveryBytes = Int(sampleRate) * 2 * 5 // ~5s of mono 16-bit
+    private let syncEveryBytes: Int
 
-    init(url: URL) throws {
+    init(url: URL, channels: UInt16 = 1) throws {
         self.url = url
+        self.channels = channels
+        syncEveryBytes = Int(Self.sampleRate) * Int(channels) * 2 * 5 // ~5s
         FileManager.default.createFile(atPath: url.path, contents: nil)
         handle = try FileHandle(forWritingTo: url)
-        try handle.write(contentsOf: Self.header(dataBytes: 0))
+        try handle.write(contentsOf: Self.header(dataBytes: 0, channels: channels))
     }
 
+    /// Raw interleaved PCM samples — for a stereo writer, caller interleaves
+    /// [L, R, L, R, ...] before calling.
     func append(_ samples: [Int16]) throws {
         guard !samples.isEmpty else { return }
         let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
@@ -38,7 +45,7 @@ final class WAVWriter {
         try handle.write(contentsOf: data)
         dataBytesWritten += UInt32(data.count)
         bytesSinceSync += data.count
-        if bytesSinceSync >= Self.syncEveryBytes {
+        if bytesSinceSync >= syncEveryBytes {
             try handle.synchronize()
             bytesSinceSync = 0
         }
@@ -48,11 +55,14 @@ final class WAVWriter {
     func finish() throws {
         try handle.synchronize()
         try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: Self.header(dataBytes: dataBytesWritten))
+        try handle.write(contentsOf: Self.header(dataBytes: dataBytesWritten, channels: channels))
         try handle.close()
     }
 
-    var framesWritten: Int { Int(dataBytesWritten) / 2 }
+    /// Time-domain frame count (one sample per channel), independent of
+    /// channel count — this is what you multiply by 1/sampleRate to get
+    /// seconds.
+    var framesWritten: Int { Int(dataBytesWritten) / 2 / Int(channels) }
 
     static func header(dataBytes: UInt32, channels: UInt16 = 1, bitsPerSample: UInt16 = 16) -> Data {
         var data = Data(capacity: headerSize)
@@ -76,14 +86,16 @@ final class WAVWriter {
 
     /// Recomputes the header from the file's actual size. Used on next launch
     /// when a session directory is found in "recording" state — the header
-    /// still says 0 bytes but the PCM data is on disk.
-    static func repairHeader(at url: URL) throws {
+    /// still says 0 bytes but the PCM data is on disk. `channels` must match
+    /// what was actually being written (repairHeader can't recover it from
+    /// the truncated file alone).
+    static func repairHeader(at url: URL, channels: UInt16 = 1) throws {
         let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
         guard size > headerSize else { return }
         let dataBytes = UInt32(size - UInt64(headerSize))
         let handle = try FileHandle(forWritingTo: url)
         try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: header(dataBytes: dataBytes))
+        try handle.write(contentsOf: header(dataBytes: dataBytes, channels: channels))
         try handle.close()
     }
 }

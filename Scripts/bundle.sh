@@ -19,7 +19,8 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/Ryokuon"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
-codesign -s "$IDENTITY" -f --options runtime "$APP" >/dev/null
+codesign -s "$IDENTITY" -f --options runtime \
+  --entitlements "$ROOT/Resources/Ryokuon.entitlements" "$APP" >/dev/null
 
 echo "built $APP"
 echo "launch with: open \"$APP\""

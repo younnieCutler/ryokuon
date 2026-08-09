@@ -155,23 +155,22 @@ final class SessionStore {
         for directory in directories {
             guard var session = try? load(from: directory), session.state == .recording else { continue }
 
-            for name in ["me.wav", "remote.wav"] {
-                try? WAVWriter.repairHeader(at: directory.appendingPathComponent(name))
-            }
+            let callURL = directory.appendingPathComponent(AudioCapture.fileName)
+            try? WAVWriter.repairHeader(at: callURL, channels: 2)
 
             session.state = .recovered
-            session.durationSeconds = wavDuration(at: directory.appendingPathComponent("me.wav"))
+            session.durationSeconds = wavDuration(at: callURL, channels: 2)
             try? save(session, in: directory)
             recovered.append(session)
         }
         return recovered
     }
 
-    private func wavDuration(at url: URL) -> Double {
+    private func wavDuration(at url: URL, channels: UInt16) -> Double {
         guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64,
               size > 44
         else { return 0 }
         let dataBytes = size - 44
-        return Double(dataBytes) / 2 / Double(WAVWriter.sampleRate)
+        return Double(dataBytes) / 2 / Double(channels) / Double(WAVWriter.sampleRate)
     }
 }

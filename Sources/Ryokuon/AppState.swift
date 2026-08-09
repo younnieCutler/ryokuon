@@ -119,7 +119,7 @@ final class AppState {
         do {
             try capture.stop()
             session.state = .finished
-            session.durationSeconds = Double(capture.meFramesWritten) / Double(WAVWriter.sampleRate)
+            session.durationSeconds = Double(capture.framesWritten) / Double(WAVWriter.sampleRate)
             try sessionStore.save(session, in: directory)
         } catch {
             lastError = "녹음 종료 중 오류: \(error)"

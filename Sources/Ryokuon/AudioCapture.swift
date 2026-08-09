@@ -16,12 +16,17 @@ private final class ConsumeOnceBox: @unchecked Sendable {
     }
 }
 
-/// Captures mic + one app's audio into two 16kHz mono WAV files.
+/// Captures mic + one app's audio into a single 16kHz stereo WAV file —
+/// left channel = me, right channel = remote (user decision 2026-08-09:
+/// one file to manage instead of two). STT in step 3 reads the two channels
+/// independently, so this is purely a storage-layout change; ME/REMOTE
+/// separation for transcription is unaffected.
 ///
 /// Pipeline: IOProc (real-time, copy-only) → RingBuffer per track → a serial
-/// queue drains every 200ms, resamples with AVAudioConverter, and appends to
-/// WAVWriter. Nothing that can allocate, lock for long, or hit disk runs on
-/// the audio thread — see RingBuffer's doc comment for why.
+/// queue drains every 200ms, resamples each track with its own
+/// AVAudioConverter, interleaves L/R, and appends to one WAVWriter. Nothing
+/// that can allocate, lock for long, or hit disk runs on the audio thread —
+/// see RingBuffer's doc comment for why.
 final class AudioCapture {
     private let device: CaptureDevice
     private var procID: AudioDeviceIOProcID?
@@ -32,8 +37,7 @@ final class AudioCapture {
     private let drainQueue = DispatchQueue(label: "dev.ryokuon.capture.writer")
     private var drainTimer: DispatchSourceTimer?
 
-    private let meWriter: WAVWriter
-    private let remoteWriter: WAVWriter
+    private let writer: WAVWriter
     private let sourceFormat: AVAudioFormat
     private let targetFormat: AVAudioFormat
     private let meConverter: AVAudioConverter
@@ -47,8 +51,8 @@ final class AudioCapture {
     var diagnostics: String {
         "mic=\(device.micChannels)ch tap=\(device.tapChannels)ch rate=\(device.sampleRate)Hz"
     }
-    var meFramesWritten: Int { meWriter.framesWritten }
-    var remoteFramesWritten: Int { remoteWriter.framesWritten }
+    var framesWritten: Int { writer.framesWritten }
+    static let fileName = "call.wav"
 
     init(process: AudioProcess, outputDirectory: URL) throws {
         device = try CaptureDevice(tapping: process)
@@ -72,8 +76,7 @@ final class AudioCapture {
         self.meConverter = meConverter
         self.remoteConverter = remoteConverter
 
-        meWriter = try WAVWriter(url: outputDirectory.appendingPathComponent("me.wav"))
-        remoteWriter = try WAVWriter(url: outputDirectory.appendingPathComponent("remote.wav"))
+        writer = try WAVWriter(url: outputDirectory.appendingPathComponent(Self.fileName), channels: 2)
     }
 
     func start() throws {
@@ -135,8 +138,7 @@ final class AudioCapture {
             AudioDeviceDestroyIOProcID(device.aggregateID, procID)
         }
         drainQueue.sync { self.drainAndWrite() } // flush whatever's left in the rings
-        try meWriter.finish()
-        try remoteWriter.finish()
+        try writer.finish()
         device.stop()
     }
 
@@ -148,8 +150,9 @@ final class AudioCapture {
         guard !meSamples.isEmpty || !remoteSamples.isEmpty else { return }
 
         do {
-            if !meSamples.isEmpty { try meWriter.append(convert(meSamples, using: meConverter)) }
-            if !remoteSamples.isEmpty { try remoteWriter.append(convert(remoteSamples, using: remoteConverter)) }
+            let me = try convert(meSamples, using: meConverter)
+            let remote = try convert(remoteSamples, using: remoteConverter)
+            try writer.append(interleave(left: me, right: remote))
         } catch {
             // Priority 1 is not losing the recording. Log and keep going
             // rather than crash the capture loop over one bad chunk.
@@ -157,6 +160,23 @@ final class AudioCapture {
         }
 
         onLevel?(decibels(of: meSamples), decibels(of: remoteSamples))
+    }
+
+    /// Both rings are fed the same frame count per IOProc call (one aggregate
+    /// device, one callback) and drained together, so `left.count ==
+    /// right.count` holds in practice — verified by step 1's exact frame
+    /// match over a 3-minute recording. Still pads the shorter side with
+    /// silence rather than trust that invariant blindly; a channel dropping
+    /// out of sync would otherwise slowly shift L/R out of alignment.
+    private func interleave(left: [Int16], right: [Int16]) -> [Int16] {
+        let count = max(left.count, right.count)
+        guard count > 0 else { return [] }
+        var output = [Int16](repeating: 0, count: count * 2)
+        for i in 0 ..< count {
+            output[i * 2] = i < left.count ? left[i] : 0
+            output[i * 2 + 1] = i < right.count ? right[i] : 0
+        }
+        return output
     }
 
     private func decibels(of samples: [Float]) -> Float {
@@ -168,6 +188,7 @@ final class AudioCapture {
     }
 
     private func convert(_ samples: [Float], using converter: AVAudioConverter) throws -> [Int16] {
+        guard !samples.isEmpty else { return [] }
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat,
                                                  frameCapacity: AVAudioFrameCount(samples.count))
         else { return [] }

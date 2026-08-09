@@ -33,18 +33,18 @@ struct SessionStoreTests {
 
     /// Q11 end to end at the SessionStore level: a session left in
     /// `.recording` state (simulating a crash) with real PCM on disk but an
-    /// unpatched header gets its header repaired and its state flipped.
+    /// unpatched header gets its header repaired and its state flipped. One
+    /// stereo call.wav (Q: user decided 2026-08-09 on a single file, L=me
+    /// R=remote, instead of two mono files) — repair must know it's 2ch or
+    /// the recomputed duration comes out double.
     @Test func recoverCrashedSessionsRepairsHeaderAndUpdatesState() throws {
         let store = SessionStore(rootDirectory: tempRoot())
         let (session, directory) = try store.createSession(language: "ja-JP", target: fakeProcess())
         #expect(session.state == .recording)
 
-        let meURL = directory.appendingPathComponent("me.wav")
-        let remoteURL = directory.appendingPathComponent("remote.wav")
-        let writer1 = try WAVWriter(url: meURL)
-        try writer1.append([Int16](repeating: 0, count: 16000)) // 1s, no finish() -> simulated crash
-        let writer2 = try WAVWriter(url: remoteURL)
-        try writer2.append([Int16](repeating: 0, count: 16000))
+        let callURL = directory.appendingPathComponent(AudioCapture.fileName)
+        let writer = try WAVWriter(url: callURL, channels: 2)
+        try writer.append([Int16](repeating: 0, count: 16000 * 2)) // 1s stereo, no finish() -> simulated crash
         // session.json still says .recording — never updated, as if the
         // process died right here.
 
@@ -56,8 +56,8 @@ struct SessionStoreTests {
         let reloaded = try store.load(from: directory)
         #expect(reloaded.state == .recovered)
 
-        let meData = try Data(contentsOf: meURL)
-        #expect(meData.count == 44 + 16000 * 2)
+        let callData = try Data(contentsOf: callURL)
+        #expect(callData.count == 44 + 16000 * 2 * 2)
     }
 
     @Test func recoverCrashedSessionsIgnoresFinishedSessions() throws {

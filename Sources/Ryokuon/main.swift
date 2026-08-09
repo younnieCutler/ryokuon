@@ -47,8 +47,7 @@ func record(selector: String, seconds: Double, outputDirectory: URL) throws {
     Thread.sleep(forTimeInterval: seconds)
     try capture.stop()
 
-    print("\nme:     \(capture.meFramesWritten) frames -> \(outputDirectory.appendingPathComponent("me.wav").path)")
-    print("remote: \(capture.remoteFramesWritten) frames -> \(outputDirectory.appendingPathComponent("remote.wav").path)")
+    print("\n\(capture.framesWritten) frames -> \(outputDirectory.appendingPathComponent(AudioCapture.fileName).path)")
 }
 
 /// Simulates the exact scenario Q11 exists for: create a session, write

@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory) // menu bar utility, no Dock icon
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Ryokuon")
+        item.button?.image = Self.statusImage(symbol: "waveform")
         item.menu = buildMenu()
         statusItem = item
 
@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             symbol = "waveform"
         }
-        statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Ryokuon")
+        statusItem?.button?.image = Self.statusImage(symbol: symbol)
         statusItem?.menu = buildMenu()
 
         // Observation tracking only fires once per registration — re-arm it.
@@ -59,6 +59,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
+    }
+
+    /// `NSImage(systemSymbolName:accessibilityDescription:)` does not set
+    /// `isTemplate` — without it the glyph renders in its default color
+    /// (black) instead of adapting to the menu bar, which on a dark menu bar
+    /// is black-on-black. This was the actual cause of the "invisible status
+    /// item" — not a SwiftUI bug, not a screenshot pipeline issue.
+    private static func statusImage(symbol: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Ryokuon")
+        image?.isTemplate = true
+        return image
     }
 
     private func buildMenu() -> NSMenu {
