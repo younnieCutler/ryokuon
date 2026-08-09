@@ -45,6 +45,10 @@ enum L10nKey {
     case currentMicLabel, currentAppLabel
     case searchPlaceholder
     case detailNoSelection
+    case editButton, doneButton, deleteButton, renameButton
+    case cancelButton, confirmButton
+    case deleteConfirmTitle // %d = count
+    case deleteConfirmMessage
 }
 
 enum Localization {
@@ -124,6 +128,14 @@ enum Localization {
             .errorNoAudioFile: "재생할 오디오 파일 없음",
             .progressStarting: "시작",
             .progressConvertingFLAC: "FLAC 변환 중",
+            .editButton: "편집",
+            .doneButton: "완료",
+            .deleteButton: "삭제",
+            .renameButton: "이름 변경",
+            .cancelButton: "취소",
+            .confirmButton: "확인",
+            .deleteConfirmTitle: "%d개 세션을 삭제할까요?",
+            .deleteConfirmMessage: "삭제한 녹음은 복구할 수 없습니다.",
         ],
         "ja": [
             .statusReady: "準備完了",
@@ -185,6 +197,14 @@ enum Localization {
             .errorNoAudioFile: "再生できる音声ファイルがありません",
             .progressStarting: "開始",
             .progressConvertingFLAC: "FLAC変換中",
+            .editButton: "編集",
+            .doneButton: "完了",
+            .deleteButton: "削除",
+            .renameButton: "名前を変更",
+            .cancelButton: "キャンセル",
+            .confirmButton: "確認",
+            .deleteConfirmTitle: "%d件のセッションを削除しますか？",
+            .deleteConfirmMessage: "削除した録音は復元できません。",
         ],
         "en": [
             .statusReady: "Ready",
@@ -246,6 +266,14 @@ enum Localization {
             .errorNoAudioFile: "No audio file to play",
             .progressStarting: "Starting",
             .progressConvertingFLAC: "Converting to FLAC",
+            .editButton: "Edit",
+            .doneButton: "Done",
+            .deleteButton: "Delete",
+            .renameButton: "Rename",
+            .cancelButton: "Cancel",
+            .confirmButton: "OK",
+            .deleteConfirmTitle: "Delete %d session(s)?",
+            .deleteConfirmMessage: "Deleted recordings cannot be recovered.",
         ],
     ]
 }

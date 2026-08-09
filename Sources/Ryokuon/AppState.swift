@@ -325,6 +325,15 @@ final class AppState {
         }
     }
 
+    /// Permanently deletes the given sessions (edit-mode multi-select or a
+    /// single row's "..." menu both funnel through here).
+    func delete(_ ids: Set<String>) {
+        for session in sessions where ids.contains(session.id) {
+            sessionStore.delete(session)
+        }
+        reloadSessions()
+    }
+
     // MARK: - Transcription (steps 3-5, run from the GUI)
 
     private(set) var transcribingSessionID: String?

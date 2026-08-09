@@ -119,10 +119,11 @@ struct RyokuonSplitView: View {
     let appState: AppState
     @State private var selection: String?
     @State private var showingSettings = false
+    @State private var isEditing = false
 
     var body: some View {
         NavigationSplitView {
-            SessionSidebar(appState: appState, selection: $selection)
+            SessionSidebar(appState: appState, selection: $selection, isEditing: $isEditing)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             if let session = appState.sessions.first(where: { $0.id == selection }) {
@@ -133,6 +134,11 @@ struct RyokuonSplitView: View {
         }
         .onAppear { appState.reloadSessions() }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button(isEditing ? appState.t(.doneButton) : appState.t(.editButton)) {
+                    isEditing.toggle()
+                }
+            }
             ToolbarItem {
                 Button { showingSettings = true } label: {
                     Image(systemName: "gearshape")
@@ -149,7 +155,12 @@ struct RyokuonSplitView: View {
 private struct SessionSidebar: View {
     let appState: AppState
     @Binding var selection: String?
+    @Binding var isEditing: Bool
     @State private var searchText = ""
+    @State private var selectedIDs: Set<String> = []
+    @State private var showDeleteConfirm = false
+    @State private var renamingSession: Session?
+    @State private var renameText = ""
 
     private var filteredSessions: [Session] {
         guard !searchText.isEmpty else { return appState.sessions }
@@ -162,11 +173,31 @@ private struct SessionSidebar: View {
                 ContentUnavailableView(appState.t(.emptyTitle), systemImage: "waveform",
                                        description: Text(appState.t(.emptySubtitle)))
             } else {
-                List(filteredSessions, id: \.id, selection: $selection) { session in
-                    SessionRow(session: session).tag(session.id)
+                List(selection: isEditing ? .constant(nil) : $selection) {
+                    ForEach(filteredSessions, id: \.id) { session in
+                        SessionRow(
+                            appState: appState, session: session, isEditing: isEditing,
+                            isSelected: selectedIDs.contains(session.id),
+                            onToggle: { toggleSelection(session.id) },
+                            onRename: {
+                                renameText = session.displayName
+                                renamingSession = session
+                            },
+                            onDelete: { appState.delete([session.id]) }
+                        )
+                        .tag(session.id)
+                    }
                 }
                 .listStyle(.sidebar)
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
+            }
+            if isEditing && !selectedIDs.isEmpty {
+                Button(role: .destructive) { showDeleteConfirm = true } label: {
+                    Text("\(appState.t(.deleteButton)) (\(selectedIDs.count))")
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, RTheme.Spacing.md)
+                .padding(.top, RTheme.Spacing.sm)
             }
             if let error = appState.lastError {
                 Text(error)
@@ -178,25 +209,81 @@ private struct SessionSidebar: View {
             Divider()
             RecordingControlBar(appState: appState)
         }
+        .onChange(of: isEditing) { _, newValue in if !newValue { selectedIDs.removeAll() } }
+        .confirmationDialog(
+            appState.t(.deleteConfirmTitle, selectedIDs.count),
+            isPresented: $showDeleteConfirm, titleVisibility: .visible
+        ) {
+            Button(appState.t(.deleteButton), role: .destructive) {
+                appState.delete(selectedIDs)
+                selectedIDs.removeAll()
+                isEditing = false
+            }
+            Button(appState.t(.cancelButton), role: .cancel) {}
+        } message: {
+            Text(appState.t(.deleteConfirmMessage))
+        }
+        .alert(
+            appState.t(.renameButton),
+            isPresented: Binding(get: { renamingSession != nil }, set: { if !$0 { renamingSession = nil } })
+        ) {
+            TextField(appState.t(.sessionNamePlaceholder), text: $renameText)
+            Button(appState.t(.confirmButton)) {
+                if let session = renamingSession { appState.rename(session, to: renameText) }
+                renamingSession = nil
+            }
+            Button(appState.t(.cancelButton), role: .cancel) { renamingSession = nil }
+        }
+    }
+
+    private func toggleSelection(_ id: String) {
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
     }
 }
 
 private struct SessionRow: View {
+    let appState: AppState
     let session: Session
+    var isEditing: Bool = false
+    var isSelected: Bool = false
+    var onToggle: () -> Void = {}
+    var onRename: () -> Void = {}
+    var onDelete: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: RTheme.Spacing.xs) {
-                Text(session.displayName)
-                if session.state == .recovered {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
+        HStack(spacing: RTheme.Spacing.sm) {
+            if isEditing {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onToggle)
             }
-            Text("\(session.targetDisplayName) · \(formattedDuration(session.durationSeconds))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: RTheme.Spacing.xs) {
+                    Text(session.displayName)
+                    if session.state == .recovered {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Text("\(session.targetDisplayName) · \(formattedDuration(session.durationSeconds))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !isEditing {
+                Menu {
+                    Button(appState.t(.renameButton), action: onRename)
+                    Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .buttonStyle(.plain)
+            }
         }
         .padding(.vertical, 2)
     }

@@ -173,6 +173,11 @@ final class SessionStore {
         return recovered
     }
 
+    /// Permanently removes the session's directory and everything in it.
+    func delete(_ session: Session) {
+        try? FileManager.default.removeItem(at: directory(for: session))
+    }
+
     private func wavDuration(at url: URL, channels: UInt16) -> Double {
         guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64,
               size > 44
