@@ -28,6 +28,40 @@ struct Session: Codable {
     var state: State
     var durationSeconds: Double
     var gains: Gains
+    /// 1 (mono, no headset — echo leak means ME/REMOTE separation isn't
+    /// worth keeping) or 2 (stereo, L=me/R=remote). Custom-decoded below so
+    /// pre-existing session.json files without this key still load — they
+    /// were all recorded stereo, so 2 is the correct default for them.
+    var channels: Int = 2
+
+    init(id: String, displayName: String, language: String, targetBundleID: String?,
+         targetDisplayName: String, createdAt: Date, state: State, durationSeconds: Double,
+         gains: Gains, channels: Int = 2) {
+        self.id = id
+        self.displayName = displayName
+        self.language = language
+        self.targetBundleID = targetBundleID
+        self.targetDisplayName = targetDisplayName
+        self.createdAt = createdAt
+        self.state = state
+        self.durationSeconds = durationSeconds
+        self.gains = gains
+        self.channels = channels
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        language = try container.decode(String.self, forKey: .language)
+        targetBundleID = try container.decodeIfPresent(String.self, forKey: .targetBundleID)
+        targetDisplayName = try container.decode(String.self, forKey: .targetDisplayName)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        state = try container.decode(State.self, forKey: .state)
+        durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
+        gains = try container.decode(Gains.self, forKey: .gains)
+        channels = try container.decodeIfPresent(Int.self, forKey: .channels) ?? 2
+    }
 }
 
 enum SessionError: Error {
@@ -67,7 +101,8 @@ final class SessionStore {
 
     /// Folder name is the stable ID (Q10): a timestamp, collision-suffixed
     /// if two recordings start in the same minute.
-    func createSession(language: String, target: AudioProcess) throws -> (session: Session, directory: URL) {
+    func createSession(language: String, targetBundleID: String?, targetDisplayName: String,
+                       channels: Int = 2) throws -> (session: Session, directory: URL) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HHmm"
         let base = formatter.string(from: Date())
@@ -83,8 +118,9 @@ final class SessionStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let session = Session(id: id, displayName: id, language: language,
-                              targetBundleID: target.bundleID, targetDisplayName: target.displayName,
-                              createdAt: Date(), state: .recording, durationSeconds: 0, gains: .init())
+                              targetBundleID: targetBundleID, targetDisplayName: targetDisplayName,
+                              createdAt: Date(), state: .recording, durationSeconds: 0, gains: .init(),
+                              channels: channels)
         try save(session, in: directory)
         return (session, directory)
     }
@@ -163,10 +199,10 @@ final class SessionStore {
             guard var session = try? load(from: directory), session.state == .recording else { continue }
 
             let callURL = directory.appendingPathComponent(AudioCapture.fileName)
-            try? WAVWriter.repairHeader(at: callURL, channels: 2)
+            try? WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
 
             session.state = .recovered
-            session.durationSeconds = wavDuration(at: callURL, channels: 2)
+            session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
             try? save(session, in: directory)
             recovered.append(session)
         }

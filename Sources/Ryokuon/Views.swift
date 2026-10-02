@@ -128,12 +128,31 @@ struct RyokuonSplitView: View {
         } detail: {
             if let session = appState.sessions.first(where: { $0.id == selection }) {
                 SessionDetailPane(appState: appState, session: session)
+                    // Fresh @State per session — without this, switching rows kept
+                    // the previous session's transcript/title/gains (reproduced).
+                    .id(session.id)
             } else {
-                ContentUnavailableView(appState.t(.detailNoSelection), systemImage: "waveform")
+                ContentUnavailableView {
+                    Label(appState.t(.detailNoSelection), systemImage: "waveform")
+                } description: {
+                    Text(appState.t(.detailNoSelectionHint))
+                } actions: {
+                    Button { appState.presentImportPanel() } label: {
+                        Label(appState.t(.importButton), systemImage: "square.and.arrow.down")
+                    }
+                }
             }
         }
         .onAppear { appState.reloadSessions() }
         .toolbar {
+            ToolbarItem {
+                Button { appState.presentImportPanel() } label: {
+                    Label(appState.t(.importButton), systemImage: "square.and.arrow.down")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help(appState.t(.importHelp))
+            }
+            ToolbarSpacer(.fixed)
             ToolbarItem {
                 Button(isEditing ? appState.t(.doneButton) : appState.t(.editButton)) {
                     isEditing.toggle()
@@ -159,8 +178,7 @@ private struct SessionSidebar: View {
     @State private var searchText = ""
     @State private var selectedIDs: Set<String> = []
     @State private var showDeleteConfirm = false
-    @State private var renamingSession: Session?
-    @State private var renameText = ""
+    @State private var isDropTargeted = false
 
     private var filteredSessions: [Session] {
         guard !searchText.isEmpty else { return appState.sessions }
@@ -179,10 +197,6 @@ private struct SessionSidebar: View {
                             appState: appState, session: session, isEditing: isEditing,
                             isSelected: selectedIDs.contains(session.id),
                             onToggle: { toggleSelection(session.id) },
-                            onRename: {
-                                renameText = session.displayName
-                                renamingSession = session
-                            },
                             onDelete: { appState.delete([session.id]) }
                         )
                         .tag(session.id)
@@ -199,6 +213,16 @@ private struct SessionSidebar: View {
                 .padding(.horizontal, RTheme.Spacing.md)
                 .padding(.top, RTheme.Spacing.sm)
             }
+            if let fileName = appState.importingFileName {
+                HStack(spacing: RTheme.Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text(appState.t(.importingFile, fileName)).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(RTheme.Spacing.sm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if let error = appState.lastError {
                 Text(error)
                     .font(.caption)
@@ -210,6 +234,27 @@ private struct SessionSidebar: View {
             RecordingControlBar(appState: appState)
         }
         .onChange(of: isEditing) { _, newValue in if !newValue { selectedIDs.removeAll() } }
+        .dropDestination(for: URL.self) { urls, _ in
+            let audio = urls.filter { ["m4a", "mp3", "wav"].contains($0.pathExtension.lowercased()) }
+            appState.importAudio(audio)
+            return !audio.isEmpty
+        } isTargeted: { isDropTargeted = $0 }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        Label(appState.t(.dropHint), systemImage: "square.and.arrow.down")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(RTheme.Spacing.md)
+                    }
+                    .padding(RTheme.Spacing.sm)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: isDropTargeted)
         .confirmationDialog(
             appState.t(.deleteConfirmTitle, selectedIDs.count),
             isPresented: $showDeleteConfirm, titleVisibility: .visible
@@ -222,17 +267,6 @@ private struct SessionSidebar: View {
             Button(appState.t(.cancelButton), role: .cancel) {}
         } message: {
             Text(appState.t(.deleteConfirmMessage))
-        }
-        .alert(
-            appState.t(.renameButton),
-            isPresented: Binding(get: { renamingSession != nil }, set: { if !$0 { renamingSession = nil } })
-        ) {
-            TextField(appState.t(.sessionNamePlaceholder), text: $renameText)
-            Button(appState.t(.confirmButton)) {
-                if let session = renamingSession { appState.rename(session, to: renameText) }
-                renamingSession = nil
-            }
-            Button(appState.t(.cancelButton), role: .cancel) { renamingSession = nil }
         }
     }
 
@@ -247,8 +281,11 @@ private struct SessionRow: View {
     var isEditing: Bool = false
     var isSelected: Bool = false
     var onToggle: () -> Void = {}
-    var onRename: () -> Void = {}
     var onDelete: () -> Void = {}
+
+    @State private var isRenaming = false
+    @State private var renameText = ""
+    @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: RTheme.Spacing.sm) {
@@ -261,7 +298,18 @@ private struct SessionRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: RTheme.Spacing.xs) {
-                    Text(session.displayName)
+                    if isRenaming {
+                        TextField(appState.t(.sessionNamePlaceholder), text: $renameText)
+                            .textFieldStyle(.plain)
+                            .focused($renameFieldFocused)
+                            .onSubmit { commitRename() }
+                            .onExitCommand { isRenaming = false }
+                            .onChange(of: renameFieldFocused) { _, focused in
+                                if !focused && isRenaming { commitRename() }
+                            }
+                    } else {
+                        Text(session.displayName)
+                    }
                     if session.state == .recovered {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption2)
@@ -275,7 +323,7 @@ private struct SessionRow: View {
             Spacer()
             if !isEditing {
                 Menu {
-                    Button(appState.t(.renameButton), action: onRename)
+                    Button(appState.t(.renameButton), action: startRenaming)
                     Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -287,6 +335,23 @@ private struct SessionRow: View {
             }
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            if !isEditing {
+                Button(appState.t(.renameButton), action: startRenaming)
+                Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
+            }
+        }
+    }
+
+    private func startRenaming() {
+        renameText = session.displayName
+        isRenaming = true
+        renameFieldFocused = true
+    }
+
+    private func commitRename() {
+        appState.rename(session, to: renameText)
+        isRenaming = false
     }
 }
 
@@ -312,6 +377,11 @@ private struct RecordingControlBar: View {
                     Spacer()
                     Text(appState.lastTargetDisplayName ?? "").font(.caption).foregroundStyle(.secondary)
                 }
+                HStack(spacing: RTheme.Spacing.xs) {
+                    Image(systemName: "mic").foregroundStyle(.secondary)
+                    MicDeviceMenu(appState: appState)
+                    Spacer()
+                }
                 HStack(spacing: RTheme.Spacing.lg) {
                     LevelMeter(label: appState.t(.gainMe), tint: .accentColor, db: appState.meLevelDB)
                     LevelMeter(label: appState.t(.gainRemote), tint: .secondary, db: appState.remoteLevelDB)
@@ -331,7 +401,7 @@ private struct RecordingControlBar: View {
             } else {
                 HStack(spacing: RTheme.Spacing.xs) {
                     Image(systemName: "mic").foregroundStyle(.secondary)
-                    Text(appState.currentMicrophoneName).font(.caption).foregroundStyle(.secondary)
+                    MicDeviceMenu(appState: appState)
                     Spacer()
                 }
                 if let name = appState.lastTargetDisplayName {
@@ -361,6 +431,43 @@ private struct RecordingControlBar: View {
             }
         }
         .padding(RTheme.Spacing.md)
+    }
+}
+
+/// Quick mic picker shown bottom-left on the main screen, both idle and
+/// while recording — setting `selectedMicDeviceUID` mid-recording switches
+/// the live capture's mic immediately (`AppState.selectedMicDeviceUID`'s
+/// setter), not just the next recording's.
+private struct MicDeviceMenu: View {
+    let appState: AppState
+
+    var body: some View {
+        Menu {
+            Button {
+                appState.selectedMicDeviceUID = ""
+            } label: {
+                if appState.selectedMicDeviceUID.isEmpty {
+                    Label(appState.t(.deviceSystemDefault), systemImage: "checkmark")
+                } else {
+                    Text(appState.t(.deviceSystemDefault))
+                }
+            }
+            ForEach(appState.availableInputDevices()) { device in
+                Button {
+                    appState.selectedMicDeviceUID = device.uid
+                } label: {
+                    if appState.selectedMicDeviceUID == device.uid {
+                        Label(device.name, systemImage: "checkmark")
+                    } else {
+                        Text(device.name)
+                    }
+                }
+            }
+        } label: {
+            Text(appState.currentMicrophoneName).font(.caption).foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 }
 
@@ -414,11 +521,15 @@ struct SettingsSheetView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var transcriptionLanguage: String
     @State private var appLanguage: String
+    @State private var micDeviceUID: String
+    @State private var outputDeviceUID: String
 
     init(appState: AppState) {
         self.appState = appState
         _transcriptionLanguage = State(initialValue: appState.language)
         _appLanguage = State(initialValue: appState.appLanguage)
+        _micDeviceUID = State(initialValue: appState.selectedMicDeviceUID)
+        _outputDeviceUID = State(initialValue: appState.selectedOutputDeviceUID)
     }
 
     var body: some View {
@@ -450,6 +561,24 @@ struct SettingsSheetView: View {
                 }
 
                 Section {
+                    Picker(appState.t(.settingsInputDevice), selection: $micDeviceUID) {
+                        Text(appState.t(.deviceSystemDefault)).tag("")
+                        ForEach(appState.availableInputDevices()) { device in
+                            Text(device.name).tag(device.uid)
+                        }
+                    }
+                    .onChange(of: micDeviceUID) { _, newValue in appState.selectedMicDeviceUID = newValue }
+
+                    Picker(appState.t(.settingsOutputDevice), selection: $outputDeviceUID) {
+                        Text(appState.t(.deviceSystemDefault)).tag("")
+                        ForEach(appState.availableOutputDevices()) { device in
+                            Text(device.name).tag(device.uid)
+                        }
+                    }
+                    .onChange(of: outputDeviceUID) { _, newValue in appState.selectedOutputDeviceUID = newValue }
+                }
+
+                Section {
                     LabeledContent(appState.t(.settingsStorageFolder)) {
                         Text(appState.sessionStore.rootDirectory.path)
                             .font(.caption)
@@ -471,7 +600,7 @@ struct SettingsSheetView: View {
             }
             .padding(RTheme.Spacing.md)
         }
-        .frame(width: 420, height: 380)
+        .frame(width: 420, height: 480)
     }
 }
 
@@ -497,6 +626,10 @@ struct SessionDetailPane: View {
     @State private var lines: [TranscriptLine] = []
     @State private var displayName: String
     @State private var query = ""
+    @State private var showingExport = false
+    /// transcript.txt exists — with `lines` empty this means a run finished
+    /// but found no speech (nearly always the wrong language).
+    @State private var hasTranscriptFile = false
 
     init(appState: AppState, session: Session) {
         self.appState = appState
@@ -508,6 +641,8 @@ struct SessionDetailPane: View {
 
     private var isPlayingThis: Bool { appState.playingSessionID == session.id }
     private var isTranscribingThis: Bool { appState.transcribingSessionID == session.id }
+    private var isQueued: Bool { appState.isQueuedForTranscription(session.id) }
+    private var hasText: Bool { !lines.isEmpty }
 
     private var filteredLines: [TranscriptLine] {
         guard !query.isEmpty else { return lines }
@@ -548,8 +683,8 @@ struct SessionDetailPane: View {
             CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
         }
         .onAppear { loadTranscript() }
-        .onChange(of: appState.transcribingSessionID) { _, newValue in
-            if newValue == nil { loadTranscript() }
+        .onChange(of: appState.transcribingSessionID) { oldValue, _ in
+            if oldValue == session.id { loadTranscript() }
         }
         // Binding form, not `.navigationTitle(displayName)` — that plus a
         // separate toolbar TextField showed the session name twice in the
@@ -559,25 +694,32 @@ struct SessionDetailPane: View {
         .navigationTitle($displayName)
         .onChange(of: displayName) { _, newValue in appState.rename(session, to: newValue) }
         .toolbar {
+            // Exactly one prominent button: the next step. No text yet ->
+            // convert; text exists -> export. The other stays plain.
             ToolbarItem {
-                Button {
-                    appState.transcribeSession(session)
-                } label: {
-                    if isTranscribingThis {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label(lines.isEmpty ? appState.t(.transcribeButton) : appState.t(.retranscribeButton),
-                              systemImage: "text.bubble")
-                    }
-                }
-                .disabled(isTranscribingThis)
+                transcribeMenu
+                    .labelStyle(.titleAndIcon)
+                    .modifier(ProminentIf(isOn: !hasText))
+                    .disabled(isTranscribingThis || isQueued || session.state == .recording)
             }
+            ToolbarItem {
+                Button { showingExport = true } label: {
+                    Label(appState.t(.exportButton), systemImage: "square.and.arrow.up")
+                        .labelStyle(.titleAndIcon)
+                }
+                .modifier(ProminentIf(isOn: hasText))
+                .disabled(session.state == .recording)
+                .help(appState.t(.exportHelp))
+            }
+        }
+        .sheet(isPresented: $showingExport) {
+            ExportSheet(appState: appState, session: session, utteranceStarts: lines.map(\.startSeconds))
         }
     }
 
     private var header: some View {
         HStack(spacing: RTheme.Spacing.sm) {
-            Text("\(session.targetDisplayName) · \(formattedDuration(session.durationSeconds)) · \(session.language)")
+            Text("\(session.targetDisplayName) · \(formattedDuration(session.durationSeconds)) · \(appState.languageName(session.language))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if session.state == .recovered {
@@ -586,7 +728,8 @@ struct SessionDetailPane: View {
                     .foregroundStyle(.orange)
             }
             Spacer()
-            if isTranscribingThis, let progress = appState.transcribeProgress {
+            // Without text the centered empty state already shows progress.
+            if isTranscribingThis, hasText, let progress = appState.transcribeProgress {
                 Text(progress).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -594,24 +737,89 @@ struct SessionDetailPane: View {
         .padding(.vertical, RTheme.Spacing.sm)
     }
 
+    /// Click = convert in the session's language; the menu picks another
+    /// language and converts right away (and remembers it for the session).
+    private var transcribeMenu: some View {
+        Menu {
+            Section(appState.t(.transcribeLanguageSection)) {
+                ForEach(AppState.supportedLanguages, id: \.id) { option in
+                    Button {
+                        appState.transcribeSession(session, language: option.id)
+                    } label: {
+                        if option.id == session.language {
+                            Label(appState.t(option.labelKey), systemImage: "checkmark")
+                        } else {
+                            Text(appState.t(option.labelKey))
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(hasText ? appState.t(.retranscribeButton) : appState.t(.transcribeButton),
+                  systemImage: "captions.bubble")
+        } primaryAction: {
+            appState.transcribeSession(session)
+        }
+        .help(appState.t(.transcribeHelp))
+    }
+
+    @ViewBuilder
     private var emptyTranscriptState: some View {
-        ContentUnavailableView(
-            appState.t(.notTranscribedYet),
-            systemImage: "text.bubble",
-            description: Text("")
-        )
+        if isTranscribingThis || isQueued {
+            VStack(spacing: RTheme.Spacing.md) {
+                ProgressView()
+                Text(isQueued ? appState.t(.transcribeQueued) : appState.t(.transcribeRunning))
+                    .font(.headline)
+                if isTranscribingThis, let progress = appState.transcribeProgress {
+                    Text(progress).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            let foundNothing = hasTranscriptFile
+            ContentUnavailableView {
+                Label(foundNothing ? appState.t(.transcribeNoSpeechTitle) : appState.t(.notTranscribedYet),
+                      systemImage: foundNothing ? "waveform.badge.exclamationmark" : "captions.bubble")
+            } description: {
+                Text(foundNothing
+                     ? appState.t(.transcribeNoSpeechHint, appState.languageName(session.language))
+                     : appState.t(.transcribeEmptyHint))
+            } actions: {
+                HStack(spacing: RTheme.Spacing.sm) {
+                    Picker(appState.t(.transcribeLanguageSection), selection: Binding(
+                        get: { session.language },
+                        set: { appState.setLanguage(for: session, to: $0) }
+                    )) {
+                        ForEach(AppState.supportedLanguages, id: \.id) { option in
+                            Text(appState.t(option.labelKey)).tag(option.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    Button {
+                        appState.transcribeSession(session)
+                    } label: {
+                        Label(foundNothing ? appState.t(.retranscribeButton) : appState.t(.transcribeButton),
+                              systemImage: "captions.bubble")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.large)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     private func loadTranscript() {
         let path = appState.sessionStore.directory(for: session).appendingPathComponent("transcript.txt")
         guard let text = try? String(contentsOf: path, encoding: .utf8) else {
             lines = []
+            hasTranscriptFile = false
             return
         }
-        lines = text.split(separator: "\n").enumerated().compactMap { index, rawLine in
-            let parts = rawLine.split(separator: "|", maxSplits: 2)
-            guard parts.count == 3, let ms = Int(parts[0]) else { return nil }
-            return TranscriptLine(id: index, startMs: ms, speaker: String(parts[1]), text: String(parts[2]))
+        hasTranscriptFile = true
+        lines = TranscriptBuilder.parse(text).enumerated().map { index, utterance in
+            TranscriptLine(id: index, startMs: utterance.startMs, speaker: utterance.speaker, text: utterance.text)
         }
     }
 }
@@ -707,12 +915,16 @@ private struct CompactPlayerBar: View {
                 Text(formattedDuration(duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
 
-            HStack(spacing: RTheme.Spacing.lg) {
-                GainControl(label: appState.t(.gainMe), tint: .accentColor, value: $meGain) {
-                    appState.setGains(for: session, me: meGain, remote: remoteGain)
-                }
-                GainControl(label: appState.t(.gainRemote), tint: .secondary, value: $remoteGain) {
-                    appState.setGains(for: session, me: meGain, remote: remoteGain)
+            // ME/REMOTE gain only exists for stereo — Player, Transcriber and
+            // MP3Exporter all ignore it on mono, so the sliders would do nothing.
+            if session.channels == 2 {
+                HStack(spacing: RTheme.Spacing.lg) {
+                    GainControl(label: appState.t(.gainMe), tint: .accentColor, value: $meGain) {
+                        appState.setGains(for: session, me: meGain, remote: remoteGain)
+                    }
+                    GainControl(label: appState.t(.gainRemote), tint: .secondary, value: $remoteGain) {
+                        appState.setGains(for: session, me: meGain, remote: remoteGain)
+                    }
                 }
             }
         }
@@ -739,5 +951,303 @@ private struct GainControl: View {
                 .frame(width: 32, alignment: .trailing)
         }
         .frame(maxWidth: 220)
+    }
+}
+
+/// The M4A-to-MP3.html workflow, per session: tick MP3 and/or MD, drag a
+/// range on the waveform (default: all), export. Files land in the
+/// session folder and Finder opens on them.
+struct ExportSheet: View {
+    let appState: AppState
+    let session: Session
+    /// Transcript line start times — empty means "not transcribed yet".
+    let utteranceStarts: [Double]
+    @Environment(\.dismiss) private var dismiss
+    @State private var start: Double = 0
+    @State private var end: Double
+    @State private var bitrate = 64
+    @State private var exportMP3: Bool
+    @State private var exportMD: Bool
+    @State private var peaks: [Float]?
+    @State private var isExporting = false
+    @State private var isPreviewing = false
+
+    init(appState: AppState, session: Session, utteranceStarts: [Double], peaks: [Float]? = nil) {
+        self.appState = appState
+        self.session = session
+        self.utteranceStarts = utteranceStarts
+        _end = State(initialValue: session.durationSeconds)
+        _exportMP3 = State(initialValue: MP3Exporter.lameURL != nil)
+        _exportMD = State(initialValue: !utteranceStarts.isEmpty)
+        _peaks = State(initialValue: peaks)
+    }
+
+    private var hasTranscript: Bool { !utteranceStarts.isEmpty }
+    private var hasLame: Bool { MP3Exporter.lameURL != nil }
+    private var isFullRange: Bool { start <= 0 && end >= session.durationSeconds }
+    private var utterancesInRange: Int { utteranceStarts.filter { $0 >= start && $0 <= end }.count }
+    private var playhead: Double? {
+        appState.playingSessionID == session.id ? appState.playbackTime : nil
+    }
+
+    /// `bitrate * seconds / 8` — what lame's CBR output actually comes to.
+    private var estimatedSize: String {
+        ByteCountFormatter.string(fromByteCount: Int64(Double(bitrate * 1000) * (end - start) / 8), countStyle: .file)
+    }
+
+    private var runTitle: String {
+        let formats = [exportMP3 ? "MP3" : nil, exportMD ? "MD" : nil].compactMap { $0 }
+        return formats.isEmpty ? appState.t(.exportRun) : appState.t(.exportRunFormats, formats.joined(separator: " + "))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RTheme.Spacing.lg) {
+            VStack(alignment: .leading, spacing: RTheme.Spacing.xs) {
+                Text(appState.t(.exportTitle)).font(.title3.bold())
+                Text(session.displayName).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            }
+
+            HStack(spacing: RTheme.Spacing.md) {
+                FormatCard(title: "MP3", subtitle: appState.t(.formatMP3Subtitle), systemImage: "waveform",
+                           detail: hasLame ? estimatedSize : appState.t(.formatNeedsLame),
+                           isOn: $exportMP3, isAvailable: hasLame)
+                FormatCard(title: "MD", subtitle: appState.t(.formatMDSubtitle), systemImage: "doc.text",
+                           detail: hasTranscript ? appState.t(.formatUtterances, utterancesInRange)
+                                                 : appState.t(.formatNeedsTranscript),
+                           isOn: $exportMD, isAvailable: hasTranscript)
+            }
+
+            rangeEditor
+
+            if exportMP3 {
+                HStack {
+                    Text(appState.t(.exportQuality))
+                    Picker(appState.t(.exportQuality), selection: $bitrate) {
+                        Text(appState.t(.qualityVoice)).tag(64)
+                        Text(appState.t(.qualityCompact)).tag(96)
+                        Text(appState.t(.qualityStandard)).tag(128)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
+
+            if !hasLame {
+                Label(appState.t(.lameMissing), systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                if isExporting { ProgressView().controlSize(.small) }
+                Spacer()
+                Button(appState.t(.cancelButton)) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(runTitle) { runExport() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isExporting || end - start < 0.5 || !(exportMP3 || exportMD))
+            }
+        }
+        .padding(RTheme.Spacing.xl)
+        .frame(width: 500)
+        .animation(.easeOut(duration: 0.15), value: exportMP3)
+        .task {
+            guard peaks == nil, let url = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session))
+            else { return }
+            peaks = (try? await Task.detached { try Waveform.peaks(of: url, buckets: 160) }.value) ?? []
+        }
+        // Preview stops itself at the range end instead of playing on.
+        .onChange(of: appState.playbackTime) { _, time in
+            if isPreviewing && time >= end { stopPreview() }
+        }
+        .onDisappear { if isPreviewing { stopPreview() } }
+    }
+
+    private var rangeEditor: some View {
+        VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
+            Text(appState.t(.exportRangeHint)).font(.caption).foregroundStyle(.secondary)
+            Group {
+                if let peaks {
+                    WaveformRangeView(peaks: peaks, duration: session.durationSeconds,
+                                      start: $start, end: $end, playhead: playhead)
+                } else {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(height: 72)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: RTheme.Spacing.sm) {
+                Text("\(formattedDuration(start)) – \(formattedDuration(end))")
+                    .font(.callout.monospacedDigit())
+                Text(appState.t(.exportLength, formattedDuration(end - start)))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(appState.t(.exportAll)) {
+                    start = 0
+                    end = session.durationSeconds
+                }
+                .disabled(isFullRange)
+                Button {
+                    if isPreviewing { stopPreview() } else { startPreview() }
+                } label: {
+                    Label(isPreviewing ? appState.t(.sessionStop) : appState.t(.exportPreview),
+                          systemImage: isPreviewing ? "stop.fill" : "play.fill")
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func startPreview() {
+        appState.play(session, from: start)
+        isPreviewing = true
+    }
+
+    private func stopPreview() {
+        appState.stopPlayback()
+        isPreviewing = false
+    }
+
+    private func runExport() {
+        isExporting = true
+        Task {
+            await appState.export(session, range: start ... end, bitrate: bitrate,
+                                  mono: bitrate < 128 || session.channels == 1,
+                                  mp3: exportMP3, markdown: exportMD)
+            isExporting = false
+            dismiss()
+        }
+    }
+}
+
+/// One tappable format tile — checked = accent border + tint, like the
+/// selectable tiles in System Settings. Unavailable tiles stay visible
+/// (greyed, with the reason as the detail line) instead of disappearing.
+private struct FormatCard: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let detail: String
+    @Binding var isOn: Bool
+    let isAvailable: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            HStack(alignment: .top, spacing: RTheme.Spacing.sm) {
+                Image(systemName: systemImage)
+                    .font(.title2)
+                    .foregroundStyle(isOn ? Color.accentColor : .secondary)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary.opacity(0.5))
+            }
+            .padding(RTheme.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isOn ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isOn ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isOn ? 2 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isAvailable)
+        .opacity(isAvailable ? 1 : 0.55)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// Voice Memos-style trim strip: bars inside the range in the accent
+/// color, outside dimmed. Drag near an edge to move it, drag anywhere else
+/// to draw a new range.
+struct WaveformRangeView: View {
+    let peaks: [Float]
+    let duration: Double
+    @Binding var start: Double
+    @Binding var end: Double
+    let playhead: Double?
+
+    private enum DragTarget { case start, end, new(anchor: Double) }
+    @State private var dragTarget: DragTarget?
+    private let handleHitWidth: CGFloat = 12
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let x = { (time: Double) in CGFloat(time / max(duration, 0.01)) * width }
+
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.1))
+                    .frame(width: max(0, x(end) - x(start)))
+                    .offset(x: x(start))
+
+                Canvas { context, size in
+                    guard !peaks.isEmpty else { return }
+                    let step = size.width / CGFloat(peaks.count)
+                    for (index, peak) in peaks.enumerated() {
+                        let time = (Double(index) + 0.5) / Double(peaks.count) * duration
+                        let height = max(2, CGFloat(peak) * (size.height - 12))
+                        let bar = CGRect(x: CGFloat(index) * step + step * 0.2, y: (size.height - height) / 2,
+                                         width: max(1, step * 0.6), height: height)
+                        let inRange = time >= start && time <= end
+                        context.fill(Path(roundedRect: bar, cornerRadius: bar.width / 2),
+                                     with: .color(inRange ? .accentColor : .secondary.opacity(0.35)))
+                    }
+                }
+
+                // Clamped so a full-range handle isn't half cut off at the edge.
+                handle.offset(x: min(max(x(start) - 1.5, 0), width - 3))
+                handle.offset(x: min(max(x(end) - 1.5, 0), width - 3))
+
+                if let playhead {
+                    Rectangle().fill(.primary).frame(width: 1).offset(x: x(playhead))
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                let time = min(max(Double(value.location.x / width) * duration, 0), duration)
+                if dragTarget == nil {
+                    let startX = value.startLocation.x
+                    if abs(startX - x(start)) <= handleHitWidth { dragTarget = .start }
+                    else if abs(startX - x(end)) <= handleHitWidth { dragTarget = .end }
+                    else { dragTarget = .new(anchor: Double(startX / width) * duration) }
+                }
+                switch dragTarget {
+                case .start: start = min(time, end)
+                case .end: end = max(time, start)
+                case .new(let anchor):
+                    start = min(anchor, time)
+                    end = max(anchor, time)
+                case nil: break
+                }
+            }.onEnded { _ in dragTarget = nil })
+        }
+        .accessibilityElement()
+        .accessibilityLabel(Text("\(formattedDuration(start)) – \(formattedDuration(end))"))
+    }
+
+    private var handle: some View {
+        Capsule().fill(Color.accentColor).frame(width: 3)
+            .padding(.vertical, 4)
+    }
+}
+
+/// Toolbar emphasis that moves with the workflow — `.glassProminent` is the
+/// macOS 26 primary-action style; everything else keeps the default glass.
+private struct ProminentIf: ViewModifier {
+    let isOn: Bool
+    func body(content: Content) -> some View {
+        if isOn { content.buttonStyle(.glassProminent) } else { content }
     }
 }

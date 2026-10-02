@@ -28,6 +28,22 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
+# MP3 export shells out to lame (CoreAudio can't encode MP3). Ship it inside
+# the app so a fresh Mac needs no Homebrew. Homebrew's lame links libmp3lame
+# statically (only /usr/lib deps — checked with otool -L), so the one binary
+# is enough. LGPL: the license travels with it.
+LAME="$(command -v lame || true)"
+if [ -z "$LAME" ]; then
+  echo "error: lame not found — brew install lame (it gets bundled into the app)" >&2
+  exit 1
+fi
+LAME_PREFIX="$(cd "$(dirname "$(readlink -f "$LAME")")/.." && pwd)"
+mkdir -p "$APP/Contents/Helpers"
+cp "$(readlink -f "$LAME")" "$APP/Contents/Helpers/lame"
+cp "$LAME_PREFIX/COPYING" "$APP/Contents/Resources/LAME-LICENSE.txt"
+
+# Inside-out: the helper is signed on its own first (no --deep on the app).
+codesign -s "$IDENTITY" -f --options runtime "$APP/Contents/Helpers/lame" >/dev/null
 codesign -s "$IDENTITY" -f --options runtime \
   --entitlements "$ROOT/Resources/Ryokuon.entitlements" "$APP" >/dev/null
 

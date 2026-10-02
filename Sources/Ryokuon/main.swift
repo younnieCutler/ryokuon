@@ -35,7 +35,8 @@ func record(selector: String, seconds: Double, outputDirectory: URL) throws {
     }
 
     try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-    let capture = try AudioCapture(process: target, outputDirectory: outputDirectory)
+    let channels = CaptureDevice.isBuiltInMicActive() ? 1 : 2
+    let capture = try AudioCapture(process: target, outputDirectory: outputDirectory, channels: channels)
     print(capture.diagnostics)
 
     capture.onLevel = { me, remote in
@@ -62,8 +63,10 @@ func crashDuring(selector: String, seconds: Double, storageRoot: URL) throws {
         exit(1)
     }
     let store = SessionStore(rootDirectory: storageRoot)
-    let (_, directory) = try store.createSession(language: "ja-JP", target: target)
-    let capture = try AudioCapture(process: target, outputDirectory: directory)
+    let channels = CaptureDevice.isBuiltInMicActive() ? 1 : 2
+    let (_, directory) = try store.createSession(language: "ja-JP", targetBundleID: target.bundleID,
+                                                 targetDisplayName: target.displayName, channels: channels)
+    let capture = try AudioCapture(process: target, outputDirectory: directory, channels: channels)
     try capture.start()
     print("crash-simulating recording to \(directory.path) for \(seconds)s, then exiting uncleanly")
     Thread.sleep(forTimeInterval: seconds)
@@ -76,8 +79,13 @@ func crashDuring(selector: String, seconds: Double, storageRoot: URL) throws {
 func transcribe(sessionDirectory: URL, locale: String?) async throws {
     let store = SessionStore(rootDirectory: sessionDirectory.deletingLastPathComponent())
     let session = try store.load(from: sessionDirectory)
+    var resolved = locale ?? session.language
+    if resolved == Transcriber.autoLanguage {
+        resolved = try await Transcriber.detectLanguage(sessionDirectory: sessionDirectory) { print($0) }
+        print("detected language: \(resolved)")
+    }
     let words = try await Transcriber.transcribe(
-        sessionDirectory: sessionDirectory, locale: locale ?? session.language,
+        sessionDirectory: sessionDirectory, locale: resolved,
         meGain: session.gains.me, remoteGain: session.gains.remote
     ) { print($0) }
     print("\n\(words.count) words -> \(sessionDirectory.appendingPathComponent("raw.json").path)")

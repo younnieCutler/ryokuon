@@ -1,6 +1,8 @@
 import AVFoundation
 import Accelerate
+import CoreAudio
 import Foundation
+import AudioToolbox
 
 /// Plays `call.wav`/`call.flac` with independent me/remote gain (Q4: not a
 /// live monitoring knob — a value chosen once, applied at playback and STT
@@ -25,6 +27,13 @@ final class Player {
     private(set) var duration: TimeInterval = 0
     var onFinish: (() -> Void)?
 
+    /// Playback output device UID — nil means the system default output.
+    /// Applied lazily in `play(url:...)`, only when it actually changed,
+    /// since reconfiguring the output unit requires the engine to be
+    /// stopped first.
+    var outputDeviceUID: String?
+    private var appliedOutputDeviceUID: String?
+
     init() {
         engine.attach(playerNode)
         // No connect() here — see the comment in `play(url:)` on why the
@@ -34,6 +43,7 @@ final class Player {
 
     func play(url: URL, from: TimeInterval = 0, meGain: Double, remoteGain: Double) throws {
         stop()
+        applyOutputDeviceIfNeeded()
 
         if loadedURL != url || buffer == nil {
             let file = try AVAudioFile(forReading: url)
@@ -102,6 +112,23 @@ final class Player {
         guard isPlaying || playerNode.isPlaying else { return }
         playerNode.stop()
         isPlaying = false
+    }
+
+    /// Sets the output unit's `kAudioOutputUnitProperty_CurrentDevice` to
+    /// `outputDeviceUID`'s resolved device, or leaves the system default in
+    /// place if unset/unresolvable. The output unit only accepts this while
+    /// stopped, so this always runs before `engine.start()`.
+    private func applyOutputDeviceIfNeeded() {
+        guard outputDeviceUID != appliedOutputDeviceUID else { return }
+        guard let uid = outputDeviceUID, var resolvedID = deviceID(forUID: uid) else {
+            appliedOutputDeviceUID = outputDeviceUID
+            return
+        }
+        engine.stop()
+        guard let audioUnit = engine.outputNode.audioUnit else { return }
+        AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                             &resolvedID, UInt32(MemoryLayout<AudioDeviceID>.size))
+        appliedOutputDeviceUID = outputDeviceUID
     }
 
     /// Copies frames `[from, from+length)` into a fresh buffer via raw

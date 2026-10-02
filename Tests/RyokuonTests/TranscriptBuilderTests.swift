@@ -99,4 +99,18 @@ struct TranscriptBuilderTests {
         let utterances = TranscriptBuilder.build(from: words)
         #expect(utterances.map(\.text) == ["먼저", "나중에"])
     }
+
+    @Test func markdownRoundTripsTranscriptAndFiltersRange() throws {
+        let parsed = TranscriptBuilder.parse("0|U|はじめ\n65000|U|?まんなか\nbroken line\n130000|U|おわり")
+        #expect(parsed.count == 3)
+        #expect(parsed[1].text == "?まんなか")
+
+        let md = TranscriptBuilder.markdown(parsed, title: "memo", createdAt: Date(), durationSeconds: 140,
+                                            language: "ja-JP", rangeMs: 60000 ... 120000)
+        #expect(md.hasPrefix("# memo\n"))
+        #expect(md.contains("1:00–2:00"))
+        #expect(md.contains("- [1:05] **U** ?まんなか"))
+        #expect(!md.contains("はじめ"))
+        #expect(!md.contains("おわり"))
+    }
 }

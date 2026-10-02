@@ -42,6 +42,33 @@ enum TranscriptBuilder {
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// Reads `transcript.txt` back (`12400|M|text`). Confidence isn't in the
+    /// file — a low-confidence line just keeps its leading `?` in `text`.
+    static func parse(_ text: String) -> [Utterance] {
+        text.split(separator: "\n").compactMap { rawLine in
+            let parts = rawLine.split(separator: "|", maxSplits: 2)
+            guard parts.count == 3, let ms = Int(parts[0]) else { return nil }
+            return Utterance(speaker: String(parts[1]), startMs: ms, text: String(parts[2]), confidence: 1)
+        }
+    }
+
+    /// The "분석용 MD" export: a header plus one timestamped line per
+    /// utterance, limited to `rangeMs` when exporting a trimmed section.
+    /// Timestamps stay relative to the original recording so they still
+    /// line up with the session's transcript and player.
+    static func markdown(_ utterances: [Utterance], title: String, createdAt: Date, durationSeconds: Double,
+                         language: String, rangeMs: ClosedRange<Int>? = nil) -> String {
+        let date = createdAt.formatted(Date.ISO8601FormatStyle(timeZone: .current).year().month().day())
+        var meta = "\(date) · \(formattedDuration(durationSeconds)) · \(language)"
+        if let rangeMs {
+            meta += " · \(formattedDuration(Double(rangeMs.lowerBound) / 1000))–\(formattedDuration(Double(rangeMs.upperBound) / 1000))"
+        }
+        let lines = utterances
+            .filter { rangeMs?.contains($0.startMs) ?? true }
+            .map { "- [\(formattedDuration(Double($0.startMs) / 1000))] **\($0.speaker)** \($0.text)" }
+        return (["# \(title)", "", meta, ""] + lines).joined(separator: "\n") + "\n"
+    }
+
     private static func mergeConsecutive(_ words: [TranscriptWord]) -> [Utterance] {
         guard let first = words.first else { return [] }
         var result: [Utterance] = []

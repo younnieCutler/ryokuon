@@ -1,7 +1,9 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Everything the menu bar + window UI reads and drives. One instance, owned
 /// by RyokuonApp.
@@ -35,11 +37,11 @@ final class AppState {
     /// 선택지도 그만큼만 노출한다(SpeechTranscriber가 지원하는 다른 로케일도 있지만
     /// 검증 안 된 걸 고를 수 있게 하면 "일본어인 줄 알았는데 안 됨" 같은 혼란만 생긴다).
     static let supportedLanguages: [(id: String, labelKey: L10nKey)] = [
-        ("ja-JP", .langJa), ("ko-KR", .langKo), ("en-US", .langEn),
+        (Transcriber.autoLanguage, .langAuto), ("ja-JP", .langJa), ("ko-KR", .langKo), ("en-US", .langEn),
     ]
 
     var language: String {
-        get { UserDefaults.standard.string(forKey: "dev.ryokuon.language") ?? "ja-JP" }
+        get { UserDefaults.standard.string(forKey: "dev.ryokuon.language") ?? Transcriber.autoLanguage }
         set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.language") }
     }
 
@@ -109,12 +111,45 @@ final class AppState {
         sessions = sessionStore.listSessions()
     }
 
-    /// System default input device's name, for display only ("현재 선택된
-    /// 마이크"). Read-only query — doesn't touch `CaptureDevice`/
-    /// `AudioCapture`, which resolve their own input at capture start
-    /// exactly as before; this is purely a label.
+    /// Manually chosen input device UID, overriding the system default mic
+    /// at capture start — "" means "use the system default" (unset). Setting
+    /// this mid-recording also switches the live capture's mic immediately
+    /// (`AudioCapture.switchMicDevice`), not just the next recording's.
+    var selectedMicDeviceUID: String {
+        get { UserDefaults.standard.string(forKey: "dev.ryokuon.micDeviceUID") ?? "" }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.micDeviceUID")
+            guard isRecording, let capture else { return }
+            do {
+                try capture.switchMicDevice(uid: newValue.isEmpty ? nil : newValue)
+                lastError = nil
+            } catch {
+                lastError = t(.errorMicSwitchFailed, "\(error)")
+            }
+        }
+    }
+
+    /// Manually chosen playback output device UID — "" means the system
+    /// default output.
+    var selectedOutputDeviceUID: String {
+        get { UserDefaults.standard.string(forKey: "dev.ryokuon.outputDeviceUID") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.outputDeviceUID") }
+    }
+
+    func availableInputDevices() -> [AudioIODevice] { listInputDevices() }
+    func availableOutputDevices() -> [AudioIODevice] { listOutputDevices() }
+
+    /// Name of the mic actually in effect for the next recording — the
+    /// manual override if set and still connected, else the system default
+    /// input, for display only ("현재 선택된 마이크").
     var currentMicrophoneName: String {
-        AVCaptureDevice.default(for: .audio)?.localizedName ?? "—"
+        if !selectedMicDeviceUID.isEmpty,
+           let id = deviceID(forUID: selectedMicDeviceUID),
+           let name = caReadString(id, kAudioObjectPropertyName)
+        {
+            return name
+        }
+        return AVCaptureDevice.default(for: .audio)?.localizedName ?? "—"
     }
 
     /// Apps currently making sound, for the "pick another app" submenu.
@@ -140,8 +175,13 @@ final class AppState {
         }
 
         do {
-            let (session, directory) = try sessionStore.createSession(language: language, target: target)
-            let newCapture = try AudioCapture(process: target, outputDirectory: directory)
+            let micDeviceUID = selectedMicDeviceUID.isEmpty ? nil : selectedMicDeviceUID
+            let channels = CaptureDevice.isBuiltInMicActive(deviceUID: micDeviceUID) ? 1 : 2
+            let (session, directory) = try sessionStore.createSession(language: language, targetBundleID: target.bundleID,
+                                                                       targetDisplayName: target.displayName,
+                                                                       channels: channels)
+            let newCapture = try AudioCapture(process: target, outputDirectory: directory, channels: channels,
+                                              micDeviceUID: micDeviceUID)
 
             let newWatchdog = SilenceWatchdog()
             newWatchdog.onWarning = { [weak self] meSilent, remoteSilent in
@@ -217,6 +257,10 @@ final class AppState {
         recordingStartDate = nil
         recordingElapsed = 0
         reloadSessions()
+        // Same flow as an imported file: a finished recording goes straight to text.
+        if let finished = sessions.first(where: { $0.id == session.id }), finished.state == .finished {
+            transcribeSession(finished)
+        }
     }
 
     // MARK: - Playback (step 5, Q4)
@@ -242,6 +286,7 @@ final class AppState {
                 self?.playingSessionID = nil
                 self?.stopPlaybackTimer()
             }
+            player.outputDeviceUID = selectedOutputDeviceUID.isEmpty ? nil : selectedOutputDeviceUID
             try player.play(url: url, from: from, meGain: session.gains.me, remoteGain: session.gains.remote)
             playingSessionID = session.id
             playbackTime = from
@@ -344,19 +389,40 @@ final class AppState {
     /// (step 4) -> FLAC conversion + original deletion (step 5, Q3). Steps
     /// 3-5 were only reachable via CLI dev commands until now — this is the
     /// GUI entry point a normal user actually has.
-    func transcribeSession(_ session: Session) {
-        guard transcribingSessionID == nil else { return }
+    func transcribeSession(_ session: Session, language newLanguage: String? = nil) {
+        // call.wav is still being written while recording — nothing to read yet.
+        guard session.state != .recording else { return }
+        var session = session
+        // Picking a language from the menu sticks to the session (session.json)
+        // — a later re-run and a queued run both use it.
+        if let newLanguage, newLanguage != session.language {
+            setLanguage(for: session, to: newLanguage)
+            session.language = newLanguage
+        }
+        guard transcribingSessionID == nil else {
+            if !transcribeQueue.contains(session.id) { transcribeQueue.append(session.id) }
+            return
+        }
         transcribingSessionID = session.id
         transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
 
         Task {
             do {
+                var locale = session.language
+                if locale == Transcriber.autoLanguage {
+                    transcribeProgress = t(.progressDetectingLanguage)
+                    locale = try await Transcriber.detectLanguage(sessionDirectory: directory)
+                    // Saved, so the header shows what was detected and ▾ can override it.
+                    if let current = sessions.first(where: { $0.id == session.id }) {
+                        setLanguage(for: current, to: locale)
+                    }
+                }
                 let words = try await Transcriber.transcribe(
-                    sessionDirectory: directory, locale: session.language,
+                    sessionDirectory: directory, locale: locale,
                     meGain: session.gains.me, remoteGain: session.gains.remote
                 ) { [weak self] message in
-                    Task { @MainActor in self?.transcribeProgress = message }
+                    Task { @MainActor in self?.transcribeProgress = self?.localizedProgress(message) }
                 }
                 let utterances = TranscriptBuilder.build(from: words)
                 try TranscriptBuilder.writeTranscript(
@@ -373,7 +439,129 @@ final class AppState {
             transcribingSessionID = nil
             transcribeProgress = nil
             reloadSessions()
+            while !transcribeQueue.isEmpty {
+                let nextID = transcribeQueue.removeFirst()
+                if let next = sessions.first(where: { $0.id == nextID }) { // skip ones deleted while waiting
+                    transcribeSession(next)
+                    break
+                }
+            }
         }
+    }
+
+    /// Sessions waiting for the one-at-a-time transcription slot (several
+    /// imported files, or "전사하기" pressed on another session mid-run).
+    private var transcribeQueue: [String] = []
+
+    func isQueuedForTranscription(_ id: String) -> Bool { transcribeQueue.contains(id) }
+
+    /// Transcriber reports plain English (the CLI prints it as-is); the
+    /// window shows it in the UI language. "transcribing" alone adds
+    /// nothing under a "변환하는 중" title, so it maps to nil.
+    private func localizedProgress(_ message: String) -> String? {
+        switch message {
+        case "transcribing": return nil
+        case "detecting language": return t(.progressDetectingLanguage)
+        case "transcribing me track": return t(.progressMeTrack)
+        case "transcribing remote track": return t(.progressRemoteTrack)
+        default:
+            guard message.hasPrefix("downloading speech model"),
+                  let percent = message.split(separator: "(").last?.dropLast()
+            else { return message }
+            return t(.progressDownloadingModel, String(percent))
+        }
+    }
+
+    /// Changes which language the next conversion of this session uses.
+    func setLanguage(for session: Session, to language: String) {
+        var updated = session
+        updated.language = language
+        try? sessionStore.save(updated, in: sessionStore.directory(for: session))
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = updated }
+    }
+
+    func languageName(_ id: String) -> String {
+        AppState.supportedLanguages.first { $0.id == id }.map { t($0.labelKey) } ?? id
+    }
+
+    // MARK: - Import / export (M4A-to-MP3.html features, 2026-10-02)
+
+    func presentImportPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.mpeg4Audio, .mp3, .wav]
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        importAudio(panel.urls)
+    }
+
+    /// Import -> new session -> transcription queued automatically, so a
+    /// dropped voice memo ends up in the same state as a finished recording.
+    /// File currently being decoded — long m4a files take a few seconds
+    /// and the sidebar shows this instead of looking frozen.
+    private(set) var importingFileName: String?
+
+    func importAudio(_ urls: [URL]) {
+        let root = sessionStore.rootDirectory
+        let language = language
+        Task {
+            for url in urls {
+                importingFileName = url.lastPathComponent
+                do {
+                    let session = try await Task.detached {
+                        try AudioImporter.importFile(url, store: SessionStore(rootDirectory: root), language: language)
+                    }.value
+                    reloadSessions()
+                    transcribeSession(session)
+                } catch {
+                    lastError = t(.errorImportFailed, "\(url.lastPathComponent): \(error)")
+                }
+            }
+            importingFileName = nil
+        }
+    }
+
+    /// Writes the selected range as MP3 and/or analysis MD into the session
+    /// folder, then shows the result in Finder.
+    func export(_ session: Session, range: ClosedRange<Double>, bitrate: Int, mono: Bool,
+                mp3: Bool, markdown: Bool) async {
+        let directory = sessionStore.directory(for: session)
+        let isFull = range.lowerBound <= 0 && range.upperBound >= session.durationSeconds
+        let suffix = isFull ? "" : "_\(Self.fileTime(range.lowerBound))-\(Self.fileTime(range.upperBound))"
+        let base = directory.appendingPathComponent(session.displayName.replacingOccurrences(of: "/", with: "-") + suffix)
+        var written: [URL] = []
+        do {
+            if mp3 {
+                guard let audioURL = AudioCapture.audioFileURL(in: directory) else { throw MP3ExporterError.noAudio }
+                let mp3URL = base.appendingPathExtension("mp3")
+                let gains = session.gains
+                try await Task.detached {
+                    try MP3Exporter.export(from: audioURL, range: range, gains: gains, bitrate: bitrate,
+                                           mono: mono, to: mp3URL)
+                }.value
+                written.append(mp3URL)
+            }
+            if markdown {
+                let text = try String(contentsOf: directory.appendingPathComponent("transcript.txt"), encoding: .utf8)
+                let md = TranscriptBuilder.markdown(
+                    TranscriptBuilder.parse(text), title: session.displayName, createdAt: session.createdAt,
+                    durationSeconds: session.durationSeconds, language: session.language,
+                    rangeMs: isFull ? nil : Int(range.lowerBound * 1000) ... Int(range.upperBound * 1000)
+                )
+                let mdURL = base.appendingPathExtension("md")
+                try md.write(to: mdURL, atomically: true, encoding: .utf8)
+                written.append(mdURL)
+            }
+            lastError = nil
+            NSWorkspace.shared.activateFileViewerSelecting(written)
+        } catch {
+            lastError = t(.errorExportFailed, "\(error)")
+        }
+    }
+
+    /// `1:05` isn't filename-safe on every tool that touches the file — `0105`.
+    private static func fileTime(_ seconds: Double) -> String {
+        let total = Int(seconds)
+        return String(format: "%02d%02d", total / 60, total % 60)
     }
 }
 

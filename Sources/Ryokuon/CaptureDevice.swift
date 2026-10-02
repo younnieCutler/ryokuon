@@ -15,18 +15,27 @@ final class CaptureDevice {
 
     /// Channel count of the mic sub-device. The aggregate's channels are
     /// ordered [mic channels..., tap channels...] — never assume mono.
-    let micChannels: Int
+    /// `micChannels`/`sampleRate` are `var`, not `let`: `switchMic(toUID:)`
+    /// rebuilds the aggregate around a different mic mid-recording, and
+    /// both can change if the new mic's channel count or native rate
+    /// differs from the old one's.
+    private(set) var micChannels: Int
     let tapChannels: Int
-    let sampleRate: Float64
+    private(set) var sampleRate: Float64
 
-    init(tapping process: AudioProcess) throws {
+    /// `micDeviceUID` overrides the system default input device (e.g. "use
+    /// the built-in mic even though AirPods are the default input") — nil
+    /// falls back to `kAudioHardwarePropertyDefaultInputDevice` exactly as
+    /// before. An unresolvable UID (device unplugged since it was chosen in
+    /// Settings) also falls back rather than throwing.
+    init(tapping process: AudioProcess, micDeviceUID: String? = nil) throws {
         let description = CATapDescription(monoMixdownOfProcesses: [process.objectID])
         description.name = "Ryokuon Tap"
         description.uuid = UUID()
         description.isPrivate = true
         description.muteBehavior = CATapMuteBehavior.unmuted
 
-        var status = AudioHardwareCreateProcessTap(description, &tapID)
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
         guard status == noErr else { throw CoreAudioError.status("AudioHardwareCreateProcessTap", status) }
 
         guard let tapUID = caReadString(tapID, kAudioTapPropertyUID) else {
@@ -34,14 +43,54 @@ final class CaptureDevice {
         }
         tapChannels = try Self.channelCount(of: tapID, scope: kAudioObjectPropertyScopeGlobal, isTapFormat: true)
 
-        let micID = caReadValue(AudioObjectID(kAudioObjectSystemObject),
-                                kAudioHardwarePropertyDefaultInputDevice,
-                                default: AudioObjectID(kAudioObjectUnknown))
+        let (micID, micUID) = try Self.resolveMic(uid: micDeviceUID)
+        micChannels = try Self.channelCount(of: micID, scope: kAudioObjectPropertyScopeInput, isTapFormat: false)
+        aggregateID = try Self.makeAggregateDevice(micUID: micUID, tapUID: tapUID)
+
+        // The aggregate's rate follows its main sub-device (the mic), not a
+        // fixed 48kHz — confirmed in step 0 with AirPods (24kHz) vs the
+        // built-in mic (48kHz). Never hardcode this.
+        sampleRate = caReadValue(aggregateID, kAudioDevicePropertyNominalSampleRate, default: Float64(48000))
+    }
+
+    /// Rebuilds the aggregate device around a different mic while a
+    /// recording is in progress — the tap (target app audio) is untouched,
+    /// so only the "me" side of the capture is interrupted for the moment
+    /// it takes to tear down the old aggregate and stand up the new one.
+    /// Callers (`AudioCapture`) must recreate their IOProc against the new
+    /// `aggregateID`/`micChannels` afterward — this only swaps the device.
+    ///
+    /// Deliberately does not touch the session's mono/stereo channel count:
+    /// that was fixed at recording start (`AppState.start`) and changing it
+    /// mid-file would corrupt the WAV header. Switching mics only changes
+    /// which physical device fills the "mic" slot, never the file layout.
+    func switchMic(toUID micDeviceUID: String?) throws {
+        guard let tapUID = caReadString(tapID, kAudioTapPropertyUID) else {
+            throw CoreAudioError.status("read kAudioTapPropertyUID", -1)
+        }
+        let (micID, micUID) = try Self.resolveMic(uid: micDeviceUID)
+        let newMicChannels = try Self.channelCount(of: micID, scope: kAudioObjectPropertyScopeInput, isTapFormat: false)
+        let newAggregateID = try Self.makeAggregateDevice(micUID: micUID, tapUID: tapUID)
+
+        let oldAggregateID = aggregateID
+        aggregateID = newAggregateID
+        micChannels = newMicChannels
+        sampleRate = caReadValue(newAggregateID, kAudioDevicePropertyNominalSampleRate, default: sampleRate)
+        if oldAggregateID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(oldAggregateID) }
+    }
+
+    private static func resolveMic(uid: String?) throws -> (id: AudioObjectID, uid: String) {
+        let micID = uid.flatMap(deviceID(forUID:))
+            ?? caReadValue(AudioObjectID(kAudioObjectSystemObject),
+                           kAudioHardwarePropertyDefaultInputDevice,
+                           default: AudioObjectID(kAudioObjectUnknown))
         guard micID != kAudioObjectUnknown,
               let micUID = caReadString(micID, kAudioDevicePropertyDeviceUID)
         else { throw CoreAudioError.status("no default input device", -1) }
-        micChannels = try Self.channelCount(of: micID, scope: kAudioObjectPropertyScopeInput, isTapFormat: false)
+        return (micID, micUID)
+    }
 
+    private static func makeAggregateDevice(micUID: String, tapUID: String) throws -> AudioObjectID {
         let aggregateDescription: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Ryokuon Capture",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -57,14 +106,26 @@ final class CaptureDevice {
                 kAudioSubTapDriftCompensationKey: true,
             ]],
         ]
-
-        status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &aggregateID)
+        var newAggregateID = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateAggregateDevice(aggregateDescription as CFDictionary, &newAggregateID)
         guard status == noErr else { throw CoreAudioError.status("AudioHardwareCreateAggregateDevice", status) }
+        return newAggregateID
+    }
 
-        // The aggregate's rate follows its main sub-device (the mic), not a
-        // fixed 48kHz — confirmed in step 0 with AirPods (24kHz) vs the
-        // built-in mic (48kHz). Never hardcode this.
-        sampleRate = caReadValue(aggregateID, kAudioDevicePropertyNominalSampleRate, default: Float64(48000))
+    /// True when the mic actually being used — `micDeviceUID` if given and
+    /// resolvable, else the system default input — is the built-in mic, i.e.
+    /// no AirPods/Bluetooth/USB headset in use. Callers use this to fall
+    /// back to mono recording, since without a headset the remote party's
+    /// audio leaks acoustically from the speaker back into the mic (echo).
+    static func isBuiltInMicActive(deviceUID: String? = nil) -> Bool {
+        let micID = deviceUID.flatMap(deviceID(forUID:))
+            ?? caReadValue(AudioObjectID(kAudioObjectSystemObject),
+                           kAudioHardwarePropertyDefaultInputDevice,
+                           default: AudioObjectID(kAudioObjectUnknown))
+        guard micID != kAudioObjectUnknown else { return false }
+        let transportType: UInt32 = caReadValue(micID, kAudioDevicePropertyTransportType,
+                                                default: kAudioDeviceTransportTypeUnknown)
+        return transportType == kAudioDeviceTransportTypeBuiltIn
     }
 
     func stop() {

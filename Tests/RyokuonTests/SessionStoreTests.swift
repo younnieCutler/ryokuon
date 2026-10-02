@@ -8,13 +8,9 @@ struct SessionStoreTests {
         FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     }
 
-    private func fakeProcess(pid: pid_t = 999, bundleID: String = "com.example.app") -> AudioProcess {
-        AudioProcess(objectID: 1, pid: pid, bundleID: bundleID, isPlaying: true)
-    }
-
     @Test func createSessionWritesReadableJSON() throws {
         let store = SessionStore(rootDirectory: tempRoot())
-        let (session, directory) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
 
         #expect(session.state == .recording)
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("session.json").path))
@@ -26,8 +22,8 @@ struct SessionStoreTests {
 
     @Test func secondSessionInSameMinuteGetsSuffixedID() throws {
         let store = SessionStore(rootDirectory: tempRoot())
-        let (first, _) = try store.createSession(language: "ja-JP", target: fakeProcess())
-        let (second, _) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (first, _) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
+        let (second, _) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
         #expect(first.id != second.id)
     }
 
@@ -39,7 +35,7 @@ struct SessionStoreTests {
     /// the recomputed duration comes out double.
     @Test func recoverCrashedSessionsRepairsHeaderAndUpdatesState() throws {
         let store = SessionStore(rootDirectory: tempRoot())
-        let (session, directory) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
         #expect(session.state == .recording)
 
         let callURL = directory.appendingPathComponent(AudioCapture.fileName)
@@ -62,7 +58,7 @@ struct SessionStoreTests {
 
     @Test func recoverCrashedSessionsIgnoresFinishedSessions() throws {
         let store = SessionStore(rootDirectory: tempRoot())
-        let (session, directory) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
         var finished = session
         finished.state = .finished
         try store.save(finished, in: directory)
@@ -73,13 +69,13 @@ struct SessionStoreTests {
 
     @Test func listSessionsSortsNewestFirst() throws {
         let store = SessionStore(rootDirectory: tempRoot())
-        let (first, dir1) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (first, dir1) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
         var older = first
         older.displayName = "older"
         try store.save(older, in: dir1)
 
         Thread.sleep(forTimeInterval: 0.01)
-        let (_, dir2) = try store.createSession(language: "ja-JP", target: fakeProcess())
+        let (_, dir2) = try store.createSession(language: "ja-JP", targetBundleID: "com.example.app", targetDisplayName: "app")
         var newerSession = try store.load(from: dir2)
         newerSession.displayName = "newer"
         try store.save(newerSession, in: dir2)

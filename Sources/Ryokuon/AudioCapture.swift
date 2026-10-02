@@ -16,11 +16,13 @@ private final class ConsumeOnceBox: @unchecked Sendable {
     }
 }
 
-/// Captures mic + one app's audio into a single 16kHz stereo WAV file —
-/// left channel = me, right channel = remote (user decision 2026-08-09:
-/// one file to manage instead of two). STT in step 3 reads the two channels
-/// independently, so this is purely a storage-layout change; ME/REMOTE
-/// separation for transcription is unaffected.
+/// Captures mic + one app's audio into a single 16kHz WAV file — normally
+/// stereo (left = me, right = remote; user decision 2026-08-09: one file to
+/// manage instead of two), but mono when no headset is in use (2026-08-13:
+/// without one the mic just picks up the remote channel's acoustic echo, so
+/// ME/REMOTE separation is downmixed away instead of storing a fake stereo
+/// split). STT in step 3 reads the two channels independently when stereo;
+/// mono sessions get a single unified transcript instead.
 ///
 /// Pipeline: IOProc (real-time, copy-only) → RingBuffer per track → a serial
 /// queue drains every 200ms, resamples each track with its own
@@ -32,16 +34,26 @@ final class AudioCapture {
     private var procID: AudioDeviceIOProcID?
     private let micRing: RingBuffer
     private let tapRing: RingBuffer
-    private let micRange: Range<Int>
-    private let tapRange: Range<Int>
+    /// `var`, not `let`: `switchMicDevice(uid:)` recomputes these against
+    /// the new mic's channel count before recreating the IOProc.
+    private var micRange: Range<Int>
+    private var tapRange: Range<Int>
     private let drainQueue = DispatchQueue(label: "dev.ryokuon.capture.writer")
     private var drainTimer: DispatchSourceTimer?
 
     private let writer: WAVWriter
-    private let sourceFormat: AVAudioFormat
+    /// True when recording mono (no headset — see CaptureDevice.isBuiltInMicActive).
+    private let isMono: Bool
+    /// `var`, not `let`: `switchMicDevice(uid:)` rebuilds all three when the
+    /// new mic's native rate differs from the old one's — the aggregate's
+    /// rate follows its mic sub-device (see `CaptureDevice`'s doc comment),
+    /// so a mic switch can change the rate `convert()` needs to assume.
+    /// Only ever mutated from `drainQueue` (see `switchMicDevice`) since
+    /// `convert()` reads them from that same queue.
+    private var sourceFormat: AVAudioFormat
     private let targetFormat: AVAudioFormat
-    private let meConverter: AVAudioConverter
-    private let remoteConverter: AVAudioConverter
+    private var meConverter: AVAudioConverter
+    private var remoteConverter: AVAudioConverter
 
     /// dB level per track, reported after each drain cycle (~5x/sec). Cheap
     /// byproduct of the resample step — step 2's level meter and silence
@@ -67,8 +79,9 @@ final class AudioCapture {
         return nil
     }
 
-    init(process: AudioProcess, outputDirectory: URL) throws {
-        device = try CaptureDevice(tapping: process)
+    init(process: AudioProcess, outputDirectory: URL, channels: Int, micDeviceUID: String? = nil) throws {
+        isMono = channels == 1
+        device = try CaptureDevice(tapping: process, micDeviceUID: micDeviceUID)
         micRange = 0 ..< device.micChannels
         tapRange = device.micChannels ..< (device.micChannels + device.tapChannels)
 
@@ -89,10 +102,25 @@ final class AudioCapture {
         self.meConverter = meConverter
         self.remoteConverter = remoteConverter
 
-        writer = try WAVWriter(url: outputDirectory.appendingPathComponent(Self.fileName), channels: 2)
+        writer = try WAVWriter(url: outputDirectory.appendingPathComponent(Self.fileName),
+                               channels: UInt16(channels))
     }
 
     func start() throws {
+        try startIOProc()
+
+        let timer = DispatchSource.makeTimerSource(queue: drainQueue)
+        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
+        timer.setEventHandler { [weak self] in self?.drainAndWrite() }
+        timer.resume()
+        drainTimer = timer
+    }
+
+    /// Creates and starts the IOProc against `device.aggregateID` — shared
+    /// by `start()` and `switchMicDevice(uid:)`, which needs to recreate
+    /// this against a freshly rebuilt aggregate without touching the drain
+    /// timer or anything downstream of the rings.
+    private func startIOProc() throws {
         let micRing = self.micRing
         let tapRing = self.tapRing
         let micRange = self.micRange
@@ -135,12 +163,48 @@ final class AudioCapture {
 
         let startStatus = AudioDeviceStart(device.aggregateID, newProcID)
         guard startStatus == noErr else { throw CoreAudioError.status("AudioDeviceStart", startStatus) }
+    }
 
-        let timer = DispatchSource.makeTimerSource(queue: drainQueue)
-        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
-        timer.setEventHandler { [weak self] in self?.drainAndWrite() }
-        timer.resume()
-        drainTimer = timer
+    /// Swaps the mic feeding this recording without stopping it — tears
+    /// down the old IOProc/aggregate, rebuilds the aggregate around the new
+    /// mic (`CaptureDevice.switchMic`), recomputes `micRange`/`tapRange`
+    /// against its (possibly different) channel count, and starts a fresh
+    /// IOProc. The tap (target app audio) and the WAV's mono/stereo layout
+    /// are untouched — only which physical device fills the "mic" slot
+    /// changes. There's a brief gap in both tracks while this runs (device
+    /// teardown/rebuild isn't instant); callers should expect a fraction of
+    /// a second of silence rather than a click or crash.
+    func switchMicDevice(uid: String?) throws {
+        if let procID {
+            AudioDeviceStop(device.aggregateID, procID)
+            AudioDeviceDestroyIOProcID(device.aggregateID, procID)
+            self.procID = nil
+        }
+        let oldRate = device.sampleRate
+        try device.switchMic(toUID: uid)
+        micRange = 0 ..< device.micChannels
+        tapRange = device.micChannels ..< (device.micChannels + device.tapChannels)
+
+        // The new mic can bring a different native rate (e.g. built-in
+        // 48kHz vs. AirPods 24kHz) — the aggregate's rate follows it, so
+        // `convert()`'s input format has to follow too, or it resamples on
+        // the wrong ratio and every sample after this point plays back
+        // pitch-shifted. Rebuilt on `drainQueue` since that's the only
+        // queue `convert()` ever runs on.
+        if device.sampleRate != oldRate {
+            guard let newSourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: device.sampleRate,
+                                                       channels: 1, interleaved: false),
+                  let newMeConverter = AVAudioConverter(from: newSourceFormat, to: targetFormat),
+                  let newRemoteConverter = AVAudioConverter(from: newSourceFormat, to: targetFormat)
+            else { throw CoreAudioError.status("AVAudioConverter init", -1) }
+            drainQueue.sync {
+                sourceFormat = newSourceFormat
+                meConverter = newMeConverter
+                remoteConverter = newRemoteConverter
+            }
+        }
+
+        try startIOProc()
     }
 
     func stop() throws {
@@ -165,7 +229,7 @@ final class AudioCapture {
         do {
             let me = try convert(meSamples, using: meConverter)
             let remote = try convert(remoteSamples, using: remoteConverter)
-            try writer.append(interleave(left: me, right: remote))
+            try writer.append(isMono ? downmix(me, remote) : interleave(left: me, right: remote))
         } catch {
             // Priority 1 is not losing the recording. Log and keep going
             // rather than crash the capture loop over one bad chunk.
@@ -188,6 +252,21 @@ final class AudioCapture {
         for i in 0 ..< count {
             output[i * 2] = i < left.count ? left[i] : 0
             output[i * 2 + 1] = i < right.count ? right[i] : 0
+        }
+        return output
+    }
+
+    /// ponytail: no headset means the mic already picked up the remote
+    /// channel's acoustic leak — keeping ME/REMOTE separate just bakes that
+    /// echo into "me" without adding real isolation. Average into one track.
+    private func downmix(_ left: [Int16], _ right: [Int16]) -> [Int16] {
+        let count = max(left.count, right.count)
+        guard count > 0 else { return [] }
+        var output = [Int16](repeating: 0, count: count)
+        for i in 0 ..< count {
+            let l = Int32(i < left.count ? left[i] : 0)
+            let r = Int32(i < right.count ? right[i] : 0)
+            output[i] = Int16((l + r) / 2)
         }
         return output
     }
