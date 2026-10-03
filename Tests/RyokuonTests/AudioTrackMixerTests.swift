@@ -6,8 +6,10 @@ import Testing
 struct AudioTrackMixerTests {
     @Test(arguments: [false, true])
     func stereoMicAndMonoTapRemainFrameAligned(interleaved: Bool) throws {
-        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
-                                               channels: 3, interleaved: interleaved))
+        // >2 channels needs an explicit layout — the channels: initializer returns nil for 3.
+        let layout = try #require(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 3))
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000,
+                                   interleaved: interleaved, channelLayout: layout)
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4))
         buffer.frameLength = 4
         let buffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
