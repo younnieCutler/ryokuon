@@ -46,6 +46,7 @@ enum L10nKey {
     case errorStartFailed, errorStopFailed, errorPlayFailed // %@ = error description
     case errorStorageChangeFailed, errorTranscribeFailed // %@ = error description
     case errorMicSwitchFailed // %@ = error description
+    case errorOperationBusy, errorMetadataSaveFailed, errorDeleteFailed
     case errorNoAudioFile
     case progressStarting, progressConvertingFLAC
     case progressMeTrack, progressRemoteTrack, progressDownloadingModel // model: %@ = "42%"
@@ -93,6 +94,10 @@ enum Localization {
 
     private static let table: [String: [L10nKey: String]] = [
         "ko": [
+            .errorOperationBusy: "작업이 끝난 뒤 다시 시도해 주세요.",
+            .errorMetadataSaveFailed: "변경 내용을 저장하지 못했습니다: %@",
+            .errorDeleteFailed: "삭제하지 못했습니다: %@",
+
             .statusReady: "준비됨",
             .statusRecording: "녹음 중",
             .statusProcessing: "처리 중",
@@ -207,6 +212,10 @@ enum Localization {
             .errorExportFailed: "내보내기 실패: %@",
         ],
         "ja": [
+            .errorOperationBusy: "処理が完了してから再試行してください。",
+            .errorMetadataSaveFailed: "変更を保存できませんでした: %@",
+            .errorDeleteFailed: "削除できませんでした: %@",
+
             .statusReady: "準備完了",
             .statusRecording: "録音中",
             .statusProcessing: "処理中",
@@ -321,6 +330,10 @@ enum Localization {
             .errorExportFailed: "書き出し失敗: %@",
         ],
         "en": [
+            .errorOperationBusy: "Wait for the active operation to finish, then try again.",
+            .errorMetadataSaveFailed: "Could not save changes: %@",
+            .errorDeleteFailed: "Could not delete: %@",
+
             .statusReady: "Ready",
             .statusRecording: "Recording",
             .statusProcessing: "Processing",

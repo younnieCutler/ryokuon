@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class AppState {
-    let sessionStore = SessionStore()
+    let sessionStore: SessionStore
     let permissions = PermissionsManager()
     let player = Player()
 
@@ -72,7 +72,7 @@ final class AppState {
     /// transcription pipeline (step 3-5) is running.
     var runState: RunState {
         if isRecording { return .recording }
-        if transcribingSessionID != nil { return .processing }
+        if transcribingSessionID != nil || importingFileName != nil || !exportingSessionIDs.isEmpty { return .processing }
         return .ready
     }
 
@@ -97,7 +97,8 @@ final class AppState {
     private var recordingStartDate: Date?
     private var recordingTimer: Timer?
 
-    init() {
+    init(sessionStore: SessionStore = SessionStore()) {
+        self.sessionStore = sessionStore
         // Q11: repair anything a crash left behind before the user can see
         // or touch the session list.
         let recovered = sessionStore.recoverCrashedSessions()
@@ -328,13 +329,35 @@ final class AppState {
     /// transcription run) picks up the new value; the audio file itself is
     /// never touched.
     func setGains(for session: Session, me: Double, remote: Double) {
-        var updated = session
-        updated.gains = .init(me: me, remote: remote)
-        let directory = sessionStore.directory(for: session)
-        try? sessionStore.save(updated, in: directory)
-        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-            sessions[index] = updated
+        persist(session) { $0.gains = .init(me: me, remote: remote) }
+    }
+
+    /// Always mutate fresh metadata, and publish only a successful disk write.
+    @discardableResult
+    private func persist(_ session: Session, change: (inout Session) -> Void) -> Bool {
+        do {
+            let directory = sessionStore.directory(for: session)
+            var updated = try sessionStore.load(from: directory)
+            change(&updated)
+            try sessionStore.save(updated, in: directory)
+            if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = updated }
+            return true
+        } catch {
+            lastError = t(.errorMetadataSaveFailed, "\(error)")
+            return false
         }
+    }
+
+    var canChangeStorageFolder: Bool {
+        !isRecording && transcribingSessionID == nil && importingFileName == nil && exportingSessionIDs.isEmpty
+    }
+
+    func canDelete(_ session: Session) -> Bool {
+        session.id != currentSession?.id && session.id != transcribingSessionID && !exportingSessionIDs.contains(session.id)
+    }
+
+    func canExport(_ session: Session) -> Bool {
+        session.state != .recording && session.id != transcribingSessionID && !exportingSessionIDs.contains(session.id)
     }
 
     // MARK: - Settings (Q9, Q10)
@@ -342,14 +365,17 @@ final class AppState {
     /// Q9: "저장 폴더 바꾸기" — only affects where new sessions go, existing
     /// ones stay put (SessionStore.setRootDirectory's own contract).
     func changeStorageFolder() {
+        guard canChangeStorageFolder else { lastError = t(.errorOperationBusy); return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = sessionStore.rootDirectory
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard canChangeStorageFolder else { lastError = t(.errorOperationBusy); return }
         do {
             try sessionStore.setRootDirectory(url)
+            stopPlayback()
             reloadSessions()
         } catch {
             lastError = t(.errorStorageChangeFailed, "\(error)")
@@ -361,20 +387,24 @@ final class AppState {
     func rename(_ session: Session, to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != session.displayName else { return }
-        var updated = session
-        updated.displayName = trimmed
-        let directory = sessionStore.directory(for: session)
-        try? sessionStore.save(updated, in: directory)
-        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-            sessions[index] = updated
-        }
+        persist(session) { $0.displayName = trimmed }
     }
 
-    /// Permanently deletes the given sessions (edit-mode multi-select or a
-    /// single row's "..." menu both funnel through here).
+    /// Refuse the whole selection if a background writer owns any session.
     func delete(_ ids: Set<String>) {
-        for session in sessions where ids.contains(session.id) {
-            sessionStore.delete(session)
+        let selected = sessions.filter { ids.contains($0.id) }
+        guard selected.allSatisfy({ canDelete($0) }) else {
+            lastError = t(.errorOperationBusy)
+            return
+        }
+        for session in selected {
+            if playingSessionID == session.id { stopPlayback() }
+            do {
+                try sessionStore.delete(session)
+                transcribeQueue.removeAll { $0 == session.id }
+            } catch {
+                lastError = t(.errorDeleteFailed, "\(session.displayName): \(error)")
+            }
         }
         reloadSessions()
     }
@@ -391,12 +421,13 @@ final class AppState {
     /// GUI entry point a normal user actually has.
     func transcribeSession(_ session: Session, language newLanguage: String? = nil) {
         // call.wav is still being written while recording — nothing to read yet.
-        guard session.state != .recording else { return }
+        guard session.state != .recording, session.id != transcribingSessionID,
+              !exportingSessionIDs.contains(session.id) else { return }
         var session = session
         // Picking a language from the menu sticks to the session (session.json)
         // — a later re-run and a queued run both use it.
         if let newLanguage, newLanguage != session.language {
-            setLanguage(for: session, to: newLanguage)
+            guard setLanguage(for: session, to: newLanguage) else { return }
             session.language = newLanguage
         }
         guard transcribingSessionID == nil else {
@@ -430,7 +461,7 @@ final class AppState {
                 )
                 if FileManager.default.fileExists(atPath: directory.appendingPathComponent(AudioCapture.fileName).path) {
                     transcribeProgress = t(.progressConvertingFLAC)
-                    _ = try FLACConverter.convert(sessionDirectory: directory)
+                    _ = try await Task.detached { try FLACConverter.convert(sessionDirectory: directory) }.value
                 }
                 lastError = nil
             } catch {
@@ -473,11 +504,9 @@ final class AppState {
     }
 
     /// Changes which language the next conversion of this session uses.
-    func setLanguage(for session: Session, to language: String) {
-        var updated = session
-        updated.language = language
-        try? sessionStore.save(updated, in: sessionStore.directory(for: session))
-        if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = updated }
+    @discardableResult
+    func setLanguage(for session: Session, to language: String) -> Bool {
+        persist(session) { $0.language = language }
     }
 
     func languageName(_ id: String) -> String {
@@ -500,30 +529,44 @@ final class AppState {
     /// and the sidebar shows this instead of looking frozen.
     private(set) var importingFileName: String?
 
+    private var pendingImports: [(url: URL, language: String)] = []
+
     func importAudio(_ urls: [URL]) {
+        pendingImports.append(contentsOf: urls.map { ($0, language) })
+        guard importingFileName == nil, let first = pendingImports.first else { return }
+        // Claim the worker before scheduling it: a second drop joins this queue.
+        importingFileName = first.url.lastPathComponent
         let root = sessionStore.rootDirectory
-        let language = language
         Task {
-            for url in urls {
-                importingFileName = url.lastPathComponent
+            defer { importingFileName = nil }
+            while !pendingImports.isEmpty {
+                let item = pendingImports.removeFirst()
+                importingFileName = item.url.lastPathComponent
                 do {
                     let session = try await Task.detached {
-                        try AudioImporter.importFile(url, store: SessionStore(rootDirectory: root), language: language)
+                        try AudioImporter.importFile(item.url, store: SessionStore(rootDirectory: root), language: item.language)
                     }.value
                     reloadSessions()
                     transcribeSession(session)
                 } catch {
-                    lastError = t(.errorImportFailed, "\(url.lastPathComponent): \(error)")
+                    lastError = t(.errorImportFailed, "\(item.url.lastPathComponent): \(error)")
                 }
             }
-            importingFileName = nil
         }
     }
+
+    private(set) var exportingSessionIDs: Set<String> = []
 
     /// Writes the selected range as MP3 and/or analysis MD into the session
     /// folder, then shows the result in Finder.
     func export(_ session: Session, range: ClosedRange<Double>, bitrate: Int, mono: Bool,
-                mp3: Bool, markdown: Bool) async {
+                mp3: Bool, markdown: Bool) async -> Bool {
+        guard canExport(session), mp3 || markdown else {
+            lastError = t(.errorOperationBusy)
+            return false
+        }
+        exportingSessionIDs.insert(session.id)
+        defer { exportingSessionIDs.remove(session.id) }
         let directory = sessionStore.directory(for: session)
         let isFull = range.lowerBound <= 0 && range.upperBound >= session.durationSeconds
         let suffix = isFull ? "" : "_\(Self.fileTime(range.lowerBound))-\(Self.fileTime(range.upperBound))"
@@ -553,8 +596,10 @@ final class AppState {
             }
             lastError = nil
             NSWorkspace.shared.activateFileViewerSelecting(written)
+            return true
         } catch {
             lastError = t(.errorExportFailed, "\(error)")
+            return false
         }
     }
 

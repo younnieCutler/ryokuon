@@ -66,6 +66,7 @@ struct Session: Codable {
 
 enum SessionError: Error {
     case notFound(URL)
+    case invalidMetadata(URL)
 }
 
 /// Owns the storage root (Q9, user-configurable) and the on-disk session
@@ -99,29 +100,29 @@ final class SessionStore {
         UserDefaults.standard.set(url.path, forKey: Self.rootDefaultsKey)
     }
 
-    /// Folder name is the stable ID (Q10): a timestamp, collision-suffixed
-    /// if two recordings start in the same minute.
+    /// Timestamp + UUID stays unique across concurrent imports and recordings.
     func createSession(language: String, targetBundleID: String?, targetDisplayName: String,
                        channels: Int = 2) throws -> (session: Session, directory: URL) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HHmm"
         let base = formatter.string(from: Date())
 
-        var id = base
-        var directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
-        var suffix = 1
-        while FileManager.default.fileExists(atPath: directory.path) {
-            id = "\(base)_\(suffix)"
-            directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
-            suffix += 1
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Imports run off the main actor and may overlap recording creation.
+        // A unique suffix avoids the check-then-create race between stores.
+        let id = "\(base)_\(UUID().uuidString)"
+        let directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
 
         let session = Session(id: id, displayName: id, language: language,
                               targetBundleID: targetBundleID, targetDisplayName: targetDisplayName,
                               createdAt: Date(), state: .recording, durationSeconds: 0, gains: .init(),
                               channels: channels)
-        try save(session, in: directory)
+        do {
+            try save(session, in: directory)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
         return (session, directory)
     }
 
@@ -151,7 +152,7 @@ final class SessionStore {
             try container.encode(box.formatter.string(from: date))
         }
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(session).write(to: directory.appendingPathComponent("session.json"))
+        try encoder.encode(session).write(to: directory.appendingPathComponent("session.json"), options: .atomic)
     }
 
     func load(from directory: URL) throws -> Session {
@@ -162,12 +163,22 @@ final class SessionStore {
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let string = try container.decode(String.self)
-            guard let date = box.formatter.date(from: string) else {
+            let legacy = ISO8601DateFormatter()
+            guard let date = box.formatter.date(from: string) ?? legacy.date(from: string) else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "bad ISO8601 date: \(string)")
             }
             return date
         }
-        return try decoder.decode(Session.self, from: data)
+        let session = try decoder.decode(Session.self, from: data)
+        // Folder identity is authoritative. Never let edited metadata redirect
+        // playback, export, or recursive deletion outside this folder.
+        guard session.id == directory.lastPathComponent,
+              session.id != ".", session.id != "..", !session.id.contains("/"),
+              (1 ... 2).contains(session.channels),
+              session.durationSeconds.isFinite, session.durationSeconds >= 0,
+              session.gains.me.isFinite, session.gains.remote.isFinite
+        else { throw SessionError.invalidMetadata(url) }
+        return session
     }
 
     /// Folder name is the session ID (Q10) — this is the one place that
@@ -199,19 +210,27 @@ final class SessionStore {
             guard var session = try? load(from: directory), session.state == .recording else { continue }
 
             let callURL = directory.appendingPathComponent(AudioCapture.fileName)
-            try? WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
-
-            session.state = .recovered
-            session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
-            try? save(session, in: directory)
-            recovered.append(session)
+            do {
+                try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
+                session.state = .recovered
+                session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
+                try save(session, in: directory)
+                recovered.append(session)
+            } catch {
+                // Keep recording state so a later launch can retry recovery.
+                continue
+            }
         }
         return recovered
     }
 
     /// Permanently removes the session's directory and everything in it.
-    func delete(_ session: Session) {
-        try? FileManager.default.removeItem(at: directory(for: session))
+    func delete(_ session: Session) throws {
+        let directory = directory(for: session).standardizedFileURL
+        guard directory.deletingLastPathComponent() == rootDirectory.standardizedFileURL,
+              !session.id.isEmpty, session.id != ".", session.id != "..", !session.id.contains("/")
+        else { throw SessionError.invalidMetadata(directory) }
+        try FileManager.default.removeItem(at: directory)
     }
 
     private func wavDuration(at url: URL, channels: UInt16) -> Double {
