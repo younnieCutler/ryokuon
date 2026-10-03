@@ -113,7 +113,7 @@ final class SessionStore {
         let directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
 
-        let session = Session(id: id, displayName: id, language: language,
+        let session = Session(id: id, displayName: base, language: language,
                               targetBundleID: targetBundleID, targetDisplayName: targetDisplayName,
                               createdAt: Date(), state: .recording, durationSeconds: 0, gains: .init(),
                               channels: channels)
@@ -227,7 +227,7 @@ final class SessionStore {
     /// Permanently removes the session's directory and everything in it.
     func delete(_ session: Session) throws {
         let directory = directory(for: session).standardizedFileURL
-        guard directory.deletingLastPathComponent() == rootDirectory.standardizedFileURL,
+        guard directory.deletingLastPathComponent().path == rootDirectory.standardizedFileURL.path,
               !session.id.isEmpty, session.id != ".", session.id != "..", !session.id.contains("/")
         else { throw SessionError.invalidMetadata(directory) }
         try FileManager.default.removeItem(at: directory)

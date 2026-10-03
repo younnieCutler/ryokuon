@@ -43,4 +43,14 @@ struct PlayerTests {
         #expect(finished == 1)
         #expect(!player.isPlaying)
     }
+    @Test func seekingPastEndDoesNotClaimPlaybackStarted() throws {
+        let url = try silentWAV(seconds: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let player = Player()
+        #expect(throws: (any Error).self) {
+            try player.play(url: url, from: 2, meGain: 1, remoteGain: 1)
+        }
+        #expect(!player.isPlaying)
+    }
+
 }

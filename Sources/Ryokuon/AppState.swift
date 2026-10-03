@@ -119,12 +119,17 @@ final class AppState {
     var selectedMicDeviceUID: String {
         get { UserDefaults.standard.string(forKey: "dev.ryokuon.micDeviceUID") ?? "" }
         set {
+            let previous = selectedMicDeviceUID
             UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.micDeviceUID")
             guard isRecording, let capture else { return }
             do {
                 try capture.switchMicDevice(uid: newValue.isEmpty ? nil : newValue)
                 lastError = nil
             } catch {
+                // The IOProc was stopped for the switch. Finalize the recording
+                // instead of showing an active timer with no input callbacks.
+                stop()
+                UserDefaults.standard.set(previous, forKey: "dev.ryokuon.micDeviceUID")
                 lastError = t(.errorMicSwitchFailed, "\(error)")
             }
         }
@@ -175,12 +180,14 @@ final class AppState {
             return
         }
 
+        var pendingDirectory: URL?
         do {
             let micDeviceUID = selectedMicDeviceUID.isEmpty ? nil : selectedMicDeviceUID
             let channels = CaptureDevice.isBuiltInMicActive(deviceUID: micDeviceUID) ? 1 : 2
             let (session, directory) = try sessionStore.createSession(language: language, targetBundleID: target.bundleID,
                                                                        targetDisplayName: target.displayName,
                                                                        channels: channels)
+            pendingDirectory = directory
             let newCapture = try AudioCapture(process: target, outputDirectory: directory, channels: channels,
                                               micDeviceUID: micDeviceUID)
 
@@ -188,6 +195,12 @@ final class AppState {
             newWatchdog.onWarning = { [weak self] meSilent, remoteSilent in
                 Task { @MainActor in
                     self?.silenceWarning = SilenceWatchdog.message(meSilent: meSilent, remoteSilent: remoteSilent)
+                }
+            }
+
+            newCapture.onError = { [weak self] error in
+                Task { @MainActor in
+                    self?.lastError = self?.t(.errorStopFailed, "\(error)")
                 }
             }
 
@@ -218,6 +231,8 @@ final class AppState {
             recordingElapsed = 0
             startRecordingTimer()
         } catch {
+            // Capture never started, so this directory has no completed audio.
+            if let pendingDirectory { try? FileManager.default.removeItem(at: pendingDirectory) }
             lastError = t(.errorStartFailed, "\(error)")
         }
     }
@@ -282,6 +297,7 @@ final class AppState {
             lastError = t(.errorNoAudioFile)
             return
         }
+        stopPlayback()
         do {
             player.onFinish = { [weak self] in
                 self?.playingSessionID = nil
@@ -357,7 +373,8 @@ final class AppState {
     }
 
     func canExport(_ session: Session) -> Bool {
-        session.state != .recording && session.id != transcribingSessionID && !exportingSessionIDs.contains(session.id)
+        session.state != .recording && session.id != transcribingSessionID
+            && !isQueuedForTranscription(session.id) && !exportingSessionIDs.contains(session.id)
     }
 
     // MARK: - Settings (Q9, Q10)
@@ -563,6 +580,13 @@ final class AppState {
                 mp3: Bool, markdown: Bool) async -> Bool {
         guard canExport(session), mp3 || markdown else {
             lastError = t(.errorOperationBusy)
+            return false
+        }
+        guard range.lowerBound.isFinite, range.upperBound.isFinite,
+              range.lowerBound >= 0, range.upperBound > range.lowerBound,
+              range.upperBound <= session.durationSeconds,
+              range.upperBound < Double(Int.max) / 1000 else {
+            lastError = t(.errorExportFailed, "\(MP3ExporterError.invalidRange)")
             return false
         }
         exportingSessionIDs.insert(session.id)

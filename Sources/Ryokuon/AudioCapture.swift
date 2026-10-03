@@ -58,6 +58,9 @@ final class AudioCapture {
     /// dB level per track, reported after each drain cycle (~5x/sec). Cheap
     /// byproduct of the resample step — step 2's level meter and silence
     /// warning (Q18) subscribe to this.
+    var onError: ((Error) -> Void)?
+    private var writeError: Error? // accessed only by drainQueue
+
     var onLevel: ((_ meDB: Float, _ remoteDB: Float) -> Void)?
 
     var diagnostics: String {
@@ -137,7 +140,11 @@ final class AudioCapture {
         procID = newProcID
 
         let startStatus = AudioDeviceStart(device.aggregateID, newProcID)
-        guard startStatus == noErr else { throw CoreAudioError.status("AudioDeviceStart", startStatus) }
+        guard startStatus == noErr else {
+            if let newProcID { AudioDeviceDestroyIOProcID(device.aggregateID, newProcID) }
+            procID = nil
+            throw CoreAudioError.status("AudioDeviceStart", startStatus)
+        }
     }
 
     /// Swaps the mic feeding this recording without stopping it — tears
@@ -155,6 +162,8 @@ final class AudioCapture {
             AudioDeviceDestroyIOProcID(device.aggregateID, procID)
             self.procID = nil
         }
+        // Drain old-rate samples before replacing their resamplers.
+        drainQueue.sync { self.drainAndWrite() }
         let oldRate = device.sampleRate
         try device.switchMic(toUID: uid)
         micRange = 0 ..< device.micChannels
@@ -182,16 +191,29 @@ final class AudioCapture {
         try startIOProc()
     }
 
+    deinit {
+        drainTimer?.cancel()
+        if let procID {
+            AudioDeviceStop(device.aggregateID, procID)
+            AudioDeviceDestroyIOProcID(device.aggregateID, procID)
+        }
+    }
+
     func stop() throws {
+        defer { device.stop() }
         drainTimer?.cancel()
         drainTimer = nil
         if let procID {
             AudioDeviceStop(device.aggregateID, procID)
             AudioDeviceDestroyIOProcID(device.aggregateID, procID)
         }
-        drainQueue.sync { self.drainAndWrite() } // flush whatever's left in the rings
+        procID = nil
+        let failure = drainQueue.sync {
+            self.drainAndWrite()
+            return self.writeError
+        }
         try writer.finish()
-        device.stop()
+        if let failure { throw failure }
     }
 
     private func drainAndWrite() {
@@ -206,8 +228,11 @@ final class AudioCapture {
             let remote = try convert(remoteSamples, using: remoteConverter)
             try writer.append(isMono ? downmix(me, remote) : interleave(left: me, right: remote))
         } catch {
-            // Priority 1 is not losing the recording. Log and keep going
-            // rather than crash the capture loop over one bad chunk.
+            // Preserve the first failure: stop must not claim a complete file.
+            if writeError == nil {
+                writeError = error
+                onError?(error)
+            }
             FileHandle.standardError.write("ryokuon: write error: \(error)\n".data(using: .utf8)!)
         }
 

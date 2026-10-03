@@ -37,6 +37,11 @@ final class CaptureDevice {
 
         let status = AudioHardwareCreateProcessTap(description, &tapID)
         guard status == noErr else { throw CoreAudioError.status("AudioHardwareCreateProcessTap", status) }
+        let createdTapID = tapID
+        var completed = false
+        defer {
+            if !completed { AudioHardwareDestroyProcessTap(createdTapID) }
+        }
 
         guard let tapUID = caReadString(tapID, kAudioTapPropertyUID) else {
             throw CoreAudioError.status("read kAudioTapPropertyUID", -1)
@@ -51,7 +56,10 @@ final class CaptureDevice {
         // fixed 48kHz — confirmed in step 0 with AirPods (24kHz) vs the
         // built-in mic (48kHz). Never hardcode this.
         sampleRate = caReadValue(aggregateID, kAudioDevicePropertyNominalSampleRate, default: Float64(48000))
+        completed = true
     }
+
+    deinit { stop() }
 
     /// Rebuilds the aggregate device around a different mic while a
     /// recording is in progress — the tap (target app audio) is untouched,
