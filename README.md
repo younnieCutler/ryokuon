@@ -1,56 +1,89 @@
 # Ryokuon
 
-Local-first macOS utility for recording two-person calls into separate ME/REMOTE
-tracks, transcribing them on-device, and browsing the transcript alongside
-playback — no cloud, no external services.
+通話を自分の声と相手の声に分けて録音し、文字起こしまで Mac の中で済ませる macOS アプリです。音声も文字起こしの結果も、外部のサーバーには送りません。
 
-- Separately captures your microphone and one chosen app's audio output into
-  a single stereo `call.wav` (L=me, R=remote), sample-aligned via a private
-  CoreAudio aggregate device.
-- Transcribes both channels on-device with Apple's `Speech.framework`
-  (`SpeechAnalyzer`/`SpeechTranscriber`), merges words into utterances, and
-  writes a compact `startMs|speaker|text` transcript.
-- Converts to FLAC after transcription and deletes the original WAV.
-- Native SwiftUI window (NavigationSplitView: session list, transcript,
-  compact player with per-track gain) plus a menu bar status item.
+## できること
 
-## Install
+### 双方向録音
 
-Apple silicon Mac, macOS 26 or later:
+マイクの音（自分）と、選んだアプリの音（相手）を同時に録ります。相手側は Zoom でも Chrome でも、音を出しているアプリなら選べます。保存先は 1 つのステレオファイルで、左チャンネルが自分、右チャンネルが相手です。
+
+Mac の内蔵マイクで録音した場合だけはモノラルになります。スピーカーの音がマイクに回り込むので、左右に分けても結局どちらにも両方の声が入ってしまうからです。
+
+### 文字起こし
+
+Apple のオンデバイス音声認識（`SpeechAnalyzer`）を使います。日本語、韓国語、英語は自動で判定するので、録音のたびに言語を選ぶ必要はありません。まれに判定が外れたら、「再文字起こし ▾」で言語を指定してやり直せます。
+
+結果は `開始ミリ秒|話者|テキスト` の 1 行 1 発話で保存します。そのまま AI に読ませやすい形です。
+
+### 音声ファイルの読み込み
+
+iPhone のボイスメモなど、m4a・mp3・wav ファイルをサイドバーにドラッグすると、録音したものと同じように文字起こしが始まります。
+
+### 書き出し
+
+波形の上をドラッグして範囲を決め、MP3、分析用の Markdown、またはその両方を書き出せます。Markdown にはタイムスタンプが付きます。
+
+文字起こしの行をクリックすればその位置から再生でき、キーワード検索もできます。
+
+## 動作環境
+
+Apple シリコン搭載の Mac で、macOS 26 以降が必要です。
+
+## インストール
+
+ターミナルで次のコマンドを実行します。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash
 ```
 
-Downloads the latest release into `/Applications` and opens it — no
-Homebrew or anything else needed (the MP3 encoder `lame`, LGPL, is bundled;
-Apple's on-device speech models download on first transcription). Run the
-same command again to update. Uninstall (recordings in
-`~/Documents/ryokuon` are kept):
+最新版が `/Applications` に入り、そのまま起動します。Homebrew などを別に入れる必要はありません。MP3 エンコーダーの `lame` はアプリに同梱しています。
+
+ブラウザでダウンロードしたアプリと違って、`curl` で入れた場合は「開発元を確認できません」という警告が出ません。
+
+アップデートも同じコマンドです。録音中に実行した場合、インストーラーは何もせずに終了します（録音が途切れないようにするためです）。録音を終えてから実行してください。
+
+アンインストールはこちらです。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash -s -- --uninstall
 ```
 
-Publishing a release (maintainers): `bash Scripts/make_release.sh --publish`
-uploads `Ryokuon.zip` as `v<CFBundleShortVersionString>`.
+アプリ本体、設定、プライバシー権限を削除します。録音データ（`~/Documents/ryokuon`）は残るので、不要なら自分で消してください。
 
-## Build
+## 使い方
+
+1. 初回起動時に、マイク、システムオーディオ録音、保存フォルダへのアクセスを順番に許可します。
+2. 録音したいアプリで音を鳴らすと、サイドバー下の「録音するアプリ」に出てきます。アプリ名を確かめて「録音開始」を押します。
+3. 録音を止めると文字起こしが自動で始まります。最初の 1 回は Apple の音声認識モデルをダウンロードするので、少し待ちます。
+4. 書き出すときは録音を選んで、右上の「書き出す」を押します。ファイルは録音フォルダに保存され、Finder が開きます。
+
+## 保存場所
+
+録音ごとに `~/Documents/ryokuon/<日時>/` というフォルダができます。保存先は設定で変えられます。
+
+| ファイル | 中身 |
+|---|---|
+| `call.wav` → `call.flac` | 音声。文字起こしが終わると FLAC に変換され、容量がおよそ半分になります |
+| `transcript.txt` | 1 行 1 発話の文字起こし。話者は M が自分、R が相手、U がモノラル |
+| `raw.json` | 単語ごとの認識結果と信頼度 |
+| `session.json` | 名前、言語、長さなど |
+
+ターミナルで文字起こしを探したいときは `bin/ryokuon` が使えます（`list`、`show`、`search`、`range`）。
+
+## ソースからビルド
 
 ```bash
 export RYOKUON_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)"
-# find yours with: security find-identity -v -p codesigning
-brew install lame   # bundled into the app at build time
+# 自分の署名 ID は: security find-identity -v -p codesigning
+brew install lame          # ビルド時にアプリへ同梱される
 bash Scripts/bundle.sh
 open .build/Ryokuon.app
 ```
 
-## Test
+テストは `swift test` で動きます。リリースを公開するときは `bash Scripts/make_release.sh --publish` を実行すると、`Ryokuon.zip` が `v<バージョン>` として GitHub にアップロードされます。
 
-```bash
-swift test
-```
+## 作者
 
-## Author
-
-Jeongyun Kim — ehrktm090@gmail.com
+Jeongyun Kim（ehrktm090@gmail.com）
