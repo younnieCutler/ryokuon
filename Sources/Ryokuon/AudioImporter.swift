@@ -3,6 +3,7 @@ import Foundation
 
 enum AudioImporterError: Error {
     case unsupportedFormat
+    case incompleteAudio
 }
 
 /// Turns an outside recording (iPhone voice memo m4a, mp3, wav) into a
@@ -20,6 +21,7 @@ enum AudioImporter {
             let writer = try WAVWriter(url: directory.appendingPathComponent(AudioCapture.fileName))
             try convert(source, into: writer)
             try writer.finish()
+            guard writer.framesWritten > 0 else { throw AudioImporterError.incompleteAudio }
 
             session.displayName = url.deletingPathExtension().lastPathComponent
             session.state = .finished
@@ -52,11 +54,13 @@ enum AudioImporter {
                 outStatus.pointee = .haveData
                 return buffer
             }
+            if let error = reader.error { throw error }
             if let conversionError { throw conversionError }
+            if status == .error { throw AudioImporterError.incompleteAudio }
             if output.frameLength > 0, let samples = output.int16ChannelData {
                 try writer.append(Array(UnsafeBufferPointer(start: samples[0], count: Int(output.frameLength))))
             }
-            if status == .endOfStream || status == .error { break }
+            if status == .endOfStream { break }
         }
     }
 
@@ -65,18 +69,26 @@ enum AudioImporter {
     private final class ChunkReader: @unchecked Sendable {
         let file: AVAudioFile
         let chunkFrames: AVAudioFrameCount
+        private(set) var error: Error?
         init(file: AVAudioFile, chunkFrames: AVAudioFrameCount) {
             self.file = file
             self.chunkFrames = chunkFrames
         }
 
         func next() -> AVAudioPCMBuffer? {
-            guard file.framePosition < file.length,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunkFrames),
-                  (try? file.read(into: buffer, frameCount: chunkFrames)) != nil,
-                  buffer.frameLength > 0
-            else { return nil }
-            return buffer
+            guard error == nil, file.framePosition < file.length else { return nil }
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: chunkFrames) else {
+                error = AudioImporterError.incompleteAudio
+                return nil
+            }
+            do {
+                try file.read(into: buffer, frameCount: chunkFrames)
+                guard buffer.frameLength > 0 else { throw AudioImporterError.incompleteAudio }
+                return buffer
+            } catch {
+                self.error = error
+                return nil
+            }
         }
     }
 }

@@ -4,6 +4,9 @@ import Foundation
 enum MP3ExporterError: Error {
     case lameNotInstalled
     case noAudio
+    case invalidRange
+    case unsupportedAudio
+    case incompleteAudio
     case lameFailed(Int32)
 }
 
@@ -22,17 +25,25 @@ enum MP3Exporter {
 
     static func export(from audioURL: URL, range: ClosedRange<Double>, gains: Session.Gains,
                        bitrate: Int, mono: Bool, to mp3URL: URL) throws {
+        guard range.lowerBound.isFinite, range.upperBound.isFinite,
+              range.lowerBound >= 0, range.upperBound > range.lowerBound,
+              gains.me.isFinite, gains.remote.isFinite else { throw MP3ExporterError.invalidRange }
         guard let lame = lameURL else { throw MP3ExporterError.lameNotInstalled }
         let tempWAV = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
         defer { try? FileManager.default.removeItem(at: tempWAV) }
         try writeRange(of: audioURL, range: range, gains: gains, to: tempWAV)
 
+        let stagedURL = mp3URL.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).mp3")
+        defer { try? FileManager.default.removeItem(at: stagedURL) }
         let process = Process()
         process.executableURL = lame
-        process.arguments = ["--quiet", "-b", "\(bitrate)"] + (mono ? ["-m", "m"] : []) + [tempWAV.path, mp3URL.path]
+        process.arguments = ["--quiet", "-b", "\(bitrate)"] + (mono ? ["-m", "m"] : []) + [tempWAV.path, stagedURL.path]
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw MP3ExporterError.lameFailed(process.terminationStatus) }
+        let output = try AVAudioFile(forReading: stagedURL)
+        guard output.length > 0 else { throw MP3ExporterError.incompleteAudio }
+        try AtomicFile.publish(stagedURL, to: mp3URL)
     }
 
     private static func writeRange(of audioURL: URL, range: ClosedRange<Double>, gains: Session.Gains,
@@ -40,8 +51,12 @@ enum MP3Exporter {
         let source = try AVAudioFile(forReading: audioURL)
         let rate = source.processingFormat.sampleRate
         let channels = Int(source.processingFormat.channelCount)
+        guard rate == Double(WAVWriter.sampleRate), (1 ... 2).contains(channels)
+        else { throw MP3ExporterError.unsupportedAudio }
+        let duration = Double(source.length) / rate
+        guard range.lowerBound < duration else { throw MP3ExporterError.noAudio }
         let start = AVAudioFramePosition(range.lowerBound * rate)
-        let end = min(AVAudioFramePosition(range.upperBound * rate), source.length)
+        let end = min(AVAudioFramePosition(min(range.upperBound, duration) * rate), source.length)
         guard end > start else { throw MP3ExporterError.noAudio }
         source.framePosition = start
 
@@ -56,7 +71,7 @@ enum MP3Exporter {
         while remaining > 0 {
             try source.read(into: buffer, frameCount: AVAudioFrameCount(min(remaining, AVAudioFramePosition(chunkFrames))))
             let frames = Int(buffer.frameLength)
-            guard frames > 0, let data = buffer.floatChannelData else { break }
+            guard frames > 0, let data = buffer.floatChannelData else { throw MP3ExporterError.incompleteAudio }
             var interleaved = [Int16](repeating: 0, count: frames * channels)
             for frame in 0 ..< frames {
                 for channel in 0 ..< channels {
