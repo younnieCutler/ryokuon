@@ -100,7 +100,8 @@ final class SessionStore {
         UserDefaults.standard.set(url.path, forKey: Self.rootDefaultsKey)
     }
 
-    /// Timestamp + UUID stays unique across concurrent imports and recordings.
+    /// Folder name = timestamp, `_1`, `_2`… on collision (Q10) — kept short
+    /// because `bin/ryokuon show <session>` takes it as typed input.
     func createSession(language: String, targetBundleID: String?, targetDisplayName: String,
                        channels: Int = 2) throws -> (session: Session, directory: URL) {
         let formatter = DateFormatter()
@@ -108,10 +109,20 @@ final class SessionStore {
         let base = formatter.string(from: Date())
 
         // Imports run off the main actor and may overlap recording creation.
-        // A unique suffix avoids the check-then-create race between stores.
-        let id = "\(base)_\(UUID().uuidString)"
-        let directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        // `withIntermediateDirectories: false` makes mkdir itself the claim:
+        // it fails atomically if the name is taken, so two creators can never
+        // share a folder (no check-then-create window) — just try the next suffix.
+        var id = base
+        var directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
+        for suffix in 1... {
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+                break
+            } catch CocoaError.fileWriteFileExists {
+                id = "\(base)_\(suffix)"
+                directory = rootDirectory.appendingPathComponent(id, isDirectory: true)
+            }
+        }
 
         let session = Session(id: id, displayName: base, language: language,
                               targetBundleID: targetBundleID, targetDisplayName: targetDisplayName,
