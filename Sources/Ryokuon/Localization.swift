@@ -34,6 +34,7 @@ enum L10nKey {
     case importHelp, exportHelp, detailNoSelectionHint
     case startRecordingWithName // %@ = target app name
     case pickAnotherApp, startRecording, noSoundApps
+    case recordTargetLabel, recordTargetNone, recordTargetChoose
     case recordingTitle // %@ = target app name
     case recordingStop
     case menuOpenSessions, menuQuit, menuNoSoundApps
@@ -74,9 +75,16 @@ enum Localization {
         ("ko", "한국어"), ("ja", "日本語"), ("en", "English"),
     ]
 
-    static func defaultLanguage() -> String {
-        let code = Locale.current.language.languageCode?.identifier ?? "ko"
-        return supportedLanguages.contains { $0.id == code } ? code : "ko"
+    /// First supported language in the system's preferred list (System
+    /// Settings → Language & Region order), else English. Not
+    /// `Locale.current`: for an app bundle that resolves through the app's
+    /// own localizations and fell back to English even on a Korean system.
+    static func defaultLanguage(preferred: [String] = Locale.preferredLanguages) -> String {
+        for identifier in preferred {
+            let code = Locale(identifier: identifier).language.languageCode?.identifier ?? ""
+            if supportedLanguages.contains(where: { $0.id == code }) { return code }
+        }
+        return "en"
     }
 
     static func string(_ key: L10nKey, language: String) -> String {
@@ -139,7 +147,10 @@ enum Localization {
             .startRecordingWithName: "녹음 시작 — %@",
             .pickAnotherApp: "다른 앱 선택",
             .startRecording: "녹음 시작",
-            .noSoundApps: "소리 내는 앱이 없음 — 녹음할 앱에서 소리를 먼저 재생해줘",
+            .recordTargetLabel: "녹음할 앱",
+            .recordTargetNone: "없음",
+            .recordTargetChoose: "선택",
+            .noSoundApps: "녹음할 앱(Zoom, Chrome 등)에서 소리를 먼저 재생하면 여기에 나타나요.",
             .recordingTitle: "녹음 중 — %@",
             .recordingStop: "종료",
             .menuOpenSessions: "세션 목록 열기",
@@ -250,7 +261,10 @@ enum Localization {
             .startRecordingWithName: "録音開始 — %@",
             .pickAnotherApp: "他のアプリを選択",
             .startRecording: "録音開始",
-            .noSoundApps: "音を出しているアプリがありません — 録音したいアプリで先に音を再生してください",
+            .recordTargetLabel: "録音するアプリ",
+            .recordTargetNone: "なし",
+            .recordTargetChoose: "選択",
+            .noSoundApps: "録音したいアプリ（Zoom、Chromeなど）で音を再生すると、ここに表示されます。",
             .recordingTitle: "録音中 — %@",
             .recordingStop: "終了",
             .menuOpenSessions: "セッション一覧を開く",
@@ -361,7 +375,10 @@ enum Localization {
             .startRecordingWithName: "Start Recording — %@",
             .pickAnotherApp: "Choose Another App",
             .startRecording: "Start Recording",
-            .noSoundApps: "No app is making sound — play something in the app you want to record first",
+            .recordTargetLabel: "App to record",
+            .recordTargetNone: "None",
+            .recordTargetChoose: "Choose",
+            .noSoundApps: "Play sound in the app you want to record (Zoom, Chrome…) and it shows up here.",
             .recordingTitle: "Recording — %@",
             .recordingStop: "Stop",
             .menuOpenSessions: "Open Session List",

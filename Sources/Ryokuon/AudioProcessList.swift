@@ -14,6 +14,14 @@ struct AudioProcess: Identifiable {
 
     var id: pid_t { pid }
 
+    /// Menu-bar-only apps (eqMac and other audio routers) report as "playing"
+    /// all the time because system audio passes through them — they should
+    /// never be the default recording target. Browser/Zoom helper processes
+    /// have no NSRunningApplication at all, so they don't count as this.
+    var isMenuBarUtility: Bool {
+        NSRunningApplication(processIdentifier: pid)?.activationPolicy == .accessory
+    }
+
     /// CoreAudio often reports the *helper* subprocess that actually
     /// renders audio (`com.google.Chrome.helper`, `...helper.Renderer`),
     /// not the main app — confirmed by a real session where this ended up

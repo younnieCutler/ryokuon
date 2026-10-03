@@ -365,8 +365,10 @@ func formattedDuration(_ seconds: Double) -> String {
 /// pattern) rather than buried in a toolbar menu. Collapses to just the
 /// state + meters + stop button while recording (priority #4: no
 /// unnecessary UI while recording — the app picker disappears).
-private struct RecordingControlBar: View {
+struct RecordingControlBar: View {
     let appState: AppState
+    /// The app picked in the idle picker; nil = last recorded app, else the first playing one.
+    @State private var selectedBundleID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
@@ -404,33 +406,67 @@ private struct RecordingControlBar: View {
                     MicDeviceMenu(appState: appState)
                     Spacer()
                 }
-                if let name = appState.lastTargetDisplayName {
-                    Button {
-                        appState.startWithLastTarget()
-                    } label: {
-                        Label(appState.t(.startRecordingWithName, name), systemImage: "record.circle")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .controlSize(.large)
-                    .tint(.red)
-                }
-                let processes = appState.playingProcesses()
-                if !processes.isEmpty {
-                    Menu(appState.lastTargetDisplayName == nil ? appState.t(.startRecording) : appState.t(.pickAnotherApp)) {
-                        ForEach(processes) { process in
-                            Button(process.displayName) { appState.start(target: process) }
-                        }
-                    }
-                    .controlSize(.regular)
-                } else if appState.lastTargetDisplayName == nil {
-                    Text(appState.t(.noSoundApps))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                // Re-queried every 2s: which apps are playing sound changes
+                // while the window sits idle (the list used to be read once,
+                // so starting Zoom after opening Ryokuon never showed up).
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    // Real apps first, menu-bar audio utilities last (stable order otherwise).
+                    let processes = appState.playingProcesses()
+                    idleControls(processes: processes.filter { !$0.isMenuBarUtility }
+                                 + processes.filter(\.isMenuBarUtility))
                 }
             }
         }
         .padding(RTheme.Spacing.md)
+    }
+
+    /// Always one big, obvious start button (it used to be a dropdown on
+    /// first launch, and picking an app from it started recording — easy
+    /// to trigger by accident). The app to record is a separate, labelled
+    /// picker; the button names it so there's no doubt what gets recorded.
+    @ViewBuilder
+    private func idleControls(processes: [AudioProcess]) -> some View {
+        let target = processes.first { $0.bundleID != nil && $0.bundleID == selectedBundleID }
+            ?? processes.first { $0.bundleID != nil && $0.bundleID == appState.lastTargetBundleID }
+            ?? processes.first { !$0.isMenuBarUtility } // a utility only when picked explicitly
+        VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
+            HStack(spacing: RTheme.Spacing.xs) {
+                Image(systemName: "app.badge").foregroundStyle(.secondary)
+                Text(appState.t(.recordTargetLabel)).foregroundStyle(.secondary)
+                Spacer()
+                if processes.isEmpty {
+                    Text(appState.t(.recordTargetNone)).foregroundStyle(.tertiary)
+                } else {
+                    Menu(target?.displayName ?? appState.t(.recordTargetChoose)) {
+                        ForEach(processes) { process in
+                            Button(process.displayName) { selectedBundleID = process.bundleID }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+            .font(.callout)
+
+            Button {
+                if let target { appState.start(target: target) }
+            } label: {
+                Label(target.map { appState.t(.startRecordingWithName, $0.displayName) } ?? appState.t(.startRecording),
+                      systemImage: "record.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.large)
+            .disabled(target == nil)
+
+            if target == nil {
+                Text(appState.t(.noSoundApps))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 
@@ -906,7 +942,7 @@ private struct CompactPlayerBar: View {
 
                 Text(formattedDuration(displayTime)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Slider(value: Binding(
-                    get: { displayTime },
+                    get: { min(displayTime, duration) }, // file can run a few ms past session.durationSeconds
                     set: { scrubTime = $0 }
                 ), in: 0 ... duration, onEditingChanged: { editing in
                     isScrubbing = editing

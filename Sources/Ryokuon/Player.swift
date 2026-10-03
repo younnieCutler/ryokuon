@@ -22,6 +22,12 @@ final class Player {
     private var buffer: AVAudioPCMBuffer?
     private var loadedURL: URL?
     private var startOffsetSeconds: TimeInterval = 0
+    /// Bumped on every play/stop. `playerNode.stop()` fires the *previous*
+    /// segment's completion handler, which lands after a seek has already
+    /// started the next segment — without this check it marked playback as
+    /// finished mid-play (reproduced: seek -> position frozen, isPlaying
+    /// false, onFinish fired while audio kept going).
+    private var generation = 0
 
     private(set) var isPlaying = false
     private(set) var duration: TimeInterval = 0
@@ -88,9 +94,14 @@ final class Player {
         if !engine.isRunning { try engine.start() }
         startOffsetSeconds = from
         isPlaying = true
-        playerNode.scheduleBuffer(segment) { [weak self] in
+        generation += 1
+        let thisGeneration = generation
+        // .dataPlayedBack: fire when the audio has actually been heard, not
+        // when the last frames were handed to the renderer (that ended the
+        // position bar slightly early).
+        playerNode.scheduleBuffer(segment, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.generation == thisGeneration else { return }
                 self.isPlaying = false
                 self.onFinish?()
             }
@@ -110,6 +121,7 @@ final class Player {
 
     func stop() {
         guard isPlaying || playerNode.isPlaying else { return }
+        generation += 1
         playerNode.stop()
         isPlaying = false
     }
