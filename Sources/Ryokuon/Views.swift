@@ -178,6 +178,7 @@ private struct SessionSidebar: View {
     @State private var searchText = ""
     @State private var selectedIDs: Set<String> = []
     @State private var showDeleteConfirm = false
+    @State private var pendingDeleteIDs: Set<String> = []
     @State private var isDropTargeted = false
 
     private var filteredSessions: [Session] {
@@ -197,7 +198,7 @@ private struct SessionSidebar: View {
                             appState: appState, session: session, isEditing: isEditing,
                             isSelected: selectedIDs.contains(session.id),
                             onToggle: { toggleSelection(session.id) },
-                            onDelete: { appState.delete([session.id]) }
+                            onDelete: { pendingDeleteIDs = [session.id]; showDeleteConfirm = true }
                         )
                         .tag(session.id)
                     }
@@ -206,7 +207,7 @@ private struct SessionSidebar: View {
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
             }
             if isEditing && !selectedIDs.isEmpty {
-                Button(role: .destructive) { showDeleteConfirm = true } label: {
+                Button(role: .destructive) { pendingDeleteIDs = selectedIDs; showDeleteConfirm = true } label: {
                     Text("\(appState.t(.deleteButton)) (\(selectedIDs.count))")
                         .frame(maxWidth: .infinity)
                 }
@@ -256,11 +257,12 @@ private struct SessionSidebar: View {
         }
         .animation(.easeOut(duration: 0.15), value: isDropTargeted)
         .confirmationDialog(
-            appState.t(.deleteConfirmTitle, selectedIDs.count),
+            appState.t(.deleteConfirmTitle, pendingDeleteIDs.count),
             isPresented: $showDeleteConfirm, titleVisibility: .visible
         ) {
             Button(appState.t(.deleteButton), role: .destructive) {
-                appState.delete(selectedIDs)
+                appState.delete(pendingDeleteIDs)
+                pendingDeleteIDs.removeAll()
                 selectedIDs.removeAll()
                 isEditing = false
             }
@@ -295,6 +297,8 @@ private struct SessionRow: View {
                         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
+                .disabled(!appState.canDelete(session))
+                .accessibilityLabel(appState.t(.deleteButton) + ": " + session.displayName)
             }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: RTheme.Spacing.xs) {
@@ -325,6 +329,7 @@ private struct SessionRow: View {
                 Menu {
                     Button(appState.t(.renameButton), action: startRenaming)
                     Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
+                        .disabled(!appState.canDelete(session))
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundStyle(.secondary)
@@ -339,6 +344,7 @@ private struct SessionRow: View {
             if !isEditing {
                 Button(appState.t(.renameButton), action: startRenaming)
                 Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
+                        .disabled(!appState.canDelete(session))
             }
         }
     }
@@ -624,6 +630,10 @@ struct SettingsSheetView: View {
                             .truncationMode(.middle)
                     }
                     Button(appState.t(.settingsChangeFolder)) { appState.changeStorageFolder() }
+                        .disabled(!appState.canChangeStorageFolder)
+                    if !appState.canChangeStorageFolder {
+                        Text(appState.t(.errorOperationBusy)).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -736,7 +746,7 @@ struct SessionDetailPane: View {
                 transcribeMenu
                     .labelStyle(.titleAndIcon)
                     .modifier(ProminentIf(isOn: !hasText))
-                    .disabled(isTranscribingThis || isQueued || session.state == .recording)
+                    .disabled(isTranscribingThis || isQueued || session.state == .recording || appState.exportingSessionIDs.contains(session.id))
             }
             ToolbarItem {
                 Button { showingExport = true } label: {
@@ -744,7 +754,7 @@ struct SessionDetailPane: View {
                         .labelStyle(.titleAndIcon)
                 }
                 .modifier(ProminentIf(isOn: hasText))
-                .disabled(session.state == .recording)
+                .disabled(!appState.canExport(session))
                 .help(appState.t(.exportHelp))
             }
         }
@@ -1007,6 +1017,7 @@ struct ExportSheet: View {
     @State private var peaks: [Float]?
     @State private var isExporting = false
     @State private var isPreviewing = false
+    @State private var exportError: String?
 
     init(appState: AppState, session: Session, utteranceStarts: [Double], peaks: [Float]? = nil) {
         self.appState = appState
@@ -1075,11 +1086,15 @@ struct ExportSheet: View {
                     .textSelection(.enabled)
             }
 
+            if let exportError {
+                Text(exportError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+            }
             HStack {
                 if isExporting { ProgressView().controlSize(.small) }
                 Spacer()
                 Button(appState.t(.cancelButton)) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isExporting)
                 Button(runTitle) { runExport() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
@@ -1088,6 +1103,7 @@ struct ExportSheet: View {
         }
         .padding(RTheme.Spacing.xl)
         .frame(width: 500)
+        .interactiveDismissDisabled(isExporting)
         .animation(.easeOut(duration: 0.15), value: exportMP3)
         .task {
             guard peaks == nil, let url = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session))
@@ -1150,12 +1166,14 @@ struct ExportSheet: View {
 
     private func runExport() {
         isExporting = true
+        exportError = nil
+        if isPreviewing { stopPreview() }
         Task {
-            await appState.export(session, range: start ... end, bitrate: bitrate,
+            let succeeded = await appState.export(session, range: start ... end, bitrate: bitrate,
                                   mono: bitrate < 128 || session.channels == 1,
                                   mp3: exportMP3, markdown: exportMD)
             isExporting = false
-            dismiss()
+            if succeeded { dismiss() } else { exportError = appState.lastError }
         }
     }
 }
