@@ -6,7 +6,8 @@ import Foundation
 /// pre-allocated buffer instead of growing an array — an hour-long recording
 /// must not trigger a reallocation on the audio thread.
 final class RingBuffer {
-    private let storage: UnsafeMutablePointer<Float>
+    private var storage: UnsafeMutablePointer<Float>
+    private var drainStorage: UnsafeMutablePointer<Float>
     private let capacity: Int
     private var writeIndex = 0
     private var count = 0
@@ -16,10 +17,12 @@ final class RingBuffer {
     init(capacity: Int) {
         self.capacity = capacity
         storage = .allocate(capacity: capacity)
+        drainStorage = .allocate(capacity: capacity)
     }
 
     deinit {
         storage.deallocate()
+        drainStorage.deallocate()
     }
 
     /// Called from the real-time IOProc thread. Drops the oldest unread
@@ -35,8 +38,8 @@ final class RingBuffer {
             let tail = writeCount - capacity
             for i in 0 ..< capacity { storage[i] = samples[tail + i] }
             writeIndex = 0
+            droppedSamples += count + writeCount - capacity
             count = capacity
-            droppedSamples += writeCount - capacity
             return
         }
 
@@ -60,13 +63,17 @@ final class RingBuffer {
         os_unfair_lock_lock(&lock)
         let available = count
         let readStart = (writeIndex - count + capacity) % capacity
+        // Transfer ownership of the snapshot in constant time. The producer
+        // can immediately reuse its new buffer without overwriting our copy.
+        swap(&storage, &drainStorage)
         count = 0
+        writeIndex = 0
         os_unfair_lock_unlock(&lock)
 
         guard available > 0 else { return }
         output.reserveCapacity(output.count + available)
         for i in 0 ..< available {
-            output.append(storage[(readStart + i) % capacity])
+            output.append(drainStorage[(readStart + i) % capacity])
         }
     }
 }
