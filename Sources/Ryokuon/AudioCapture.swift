@@ -130,33 +130,8 @@ final class AudioCapture {
         let status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, device.aggregateID, nil) {
             _, inputData, _, _, _ in
             let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
-            var channelIndex = 0
-            for buffer in buffers {
-                let channels = Int(buffer.mNumberChannels)
-                guard channels > 0, let raw = buffer.mData else { channelIndex += channels; continue }
-                let frames = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size / channels
-                let samples = raw.assumingMemoryBound(to: Float.self)
-
-                if channels == 1 {
-                    if micRange.contains(channelIndex) { micRing.write(samples, count: frames) }
-                    if tapRange.contains(channelIndex) { tapRing.write(samples, count: frames) }
-                } else {
-                    // Interleaved multi-channel buffer (e.g. a stereo mic) —
-                    // de-interleave per channel before handing to the rings.
-                    for offset in 0 ..< channels {
-                        let absolute = channelIndex + offset
-                        guard micRange.contains(absolute) || tapRange.contains(absolute) else { continue }
-                        var extracted = [Float](repeating: 0, count: frames)
-                        for frame in 0 ..< frames { extracted[frame] = samples[frame * channels + offset] }
-                        extracted.withUnsafeBufferPointer { pointer in
-                            guard let base = pointer.baseAddress else { return }
-                            if micRange.contains(absolute) { micRing.write(base, count: frames) }
-                            if tapRange.contains(absolute) { tapRing.write(base, count: frames) }
-                        }
-                    }
-                }
-                channelIndex += channels
-            }
+            AudioTrackMixer.write(buffers, channels: micRange, into: micRing)
+            AudioTrackMixer.write(buffers, channels: tapRange, into: tapRing)
         }
         guard status == noErr else { throw CoreAudioError.status("AudioDeviceCreateIOProcIDWithBlock", status) }
         procID = newProcID

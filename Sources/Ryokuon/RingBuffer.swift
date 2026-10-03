@@ -30,13 +30,18 @@ final class RingBuffer {
     /// stalling the audio callback is worse (it can glitch every other
     /// stream on the device).
     func write(_ samples: UnsafePointer<Float>, count writeCount: Int) {
+        write(count: writeCount) { samples[$0] }
+    }
+
+    /// Synchronous, nonescaping producer for channel mixdown without allocating.
+    func write(count writeCount: Int, sampleAt: (Int) -> Float) {
         os_unfair_lock_lock(&lock)
         defer { os_unfair_lock_unlock(&lock) }
 
         if writeCount >= capacity {
             // Pathological case: single write bigger than the whole buffer.
             let tail = writeCount - capacity
-            for i in 0 ..< capacity { storage[i] = samples[tail + i] }
+            for i in 0 ..< capacity { storage[i] = sampleAt(tail + i) }
             writeIndex = 0
             droppedSamples += count + writeCount - capacity
             count = capacity
@@ -44,7 +49,7 @@ final class RingBuffer {
         }
 
         for i in 0 ..< writeCount {
-            storage[writeIndex] = samples[i]
+            storage[writeIndex] = sampleAt(i)
             writeIndex = (writeIndex + 1) % capacity
         }
 
