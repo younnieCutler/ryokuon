@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = appState.isRecording
             _ = appState.silenceWarning
             _ = appState.transcribingSessionID
+            _ = appState.importingFileName
+            _ = appState.exportingSessionIDs
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
@@ -56,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = appState.isRecording
             _ = appState.silenceWarning
             _ = appState.transcribingSessionID
+            _ = appState.importingFileName
+            _ = appState.exportingSessionIDs
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }

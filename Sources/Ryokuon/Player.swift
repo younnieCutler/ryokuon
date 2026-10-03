@@ -4,6 +4,8 @@ import CoreAudio
 import Foundation
 import AudioToolbox
 
+enum PlayerError: Error { case noAudio, invalidPosition }
+
 /// Plays `call.wav`/`call.flac` with independent me/remote gain (Q4: not a
 /// live monitoring knob — a value chosen once, applied at playback and STT
 /// time, original file never touched). Gain is baked into an in-memory
@@ -38,7 +40,7 @@ final class Player {
     /// since reconfiguring the output unit requires the engine to be
     /// stopped first.
     var outputDeviceUID: String?
-    private var appliedOutputDeviceUID: String?
+    private var appliedOutputDeviceID: AudioDeviceID?
 
     init() {
         engine.attach(playerNode)
@@ -49,14 +51,16 @@ final class Player {
 
     func play(url: URL, from: TimeInterval = 0, meGain: Double, remoteGain: Double) throws {
         stop()
-        applyOutputDeviceIfNeeded()
+        try applyOutputDeviceIfNeeded()
+        guard from.isFinite else { throw PlayerError.invalidPosition }
 
         if loadedURL != url || buffer == nil {
             let file = try AVAudioFile(forReading: url)
             let format = file.processingFormat
+            guard file.length > 0, file.length <= Int64(UInt32.max) else { throw PlayerError.noAudio }
             let frameCount = AVAudioFrameCount(file.length)
             guard frameCount > 0, let full = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
-            else { return }
+            else { throw PlayerError.noAudio }
             try file.read(into: full)
             buffer = full
             loadedURL = url
@@ -82,17 +86,18 @@ final class Player {
             engine.disconnectNodeOutput(playerNode)
             engine.connect(playerNode, to: engine.mainMixerNode, format: format)
         }
-        guard let buffer else { return }
+        guard let buffer else { throw PlayerError.noAudio }
 
         let sampleRate = buffer.format.sampleRate
-        let startFrame = AVAudioFramePosition(max(0, from) * sampleRate)
-        guard startFrame < AVAudioFramePosition(buffer.frameLength) else { return }
+        let position = max(0, from)
+        guard position < Double(buffer.frameLength) / sampleRate else { throw PlayerError.invalidPosition }
+        let startFrame = AVAudioFramePosition(position * sampleRate)
         let length = AVAudioFrameCount(AVAudioFramePosition(buffer.frameLength) - startFrame)
-        guard let segment = slice(buffer, from: AVAudioFrameCount(startFrame), length: length) else { return }
+        guard let segment = slice(buffer, from: AVAudioFrameCount(startFrame), length: length) else { throw PlayerError.noAudio }
         applyGain(to: segment, meGain: Float(meGain), remoteGain: Float(remoteGain))
 
         if !engine.isRunning { try engine.start() }
-        startOffsetSeconds = from
+        startOffsetSeconds = position
         isPlaying = true
         generation += 1
         let thisGeneration = generation
@@ -130,17 +135,20 @@ final class Player {
     /// `outputDeviceUID`'s resolved device, or leaves the system default in
     /// place if unset/unresolvable. The output unit only accepts this while
     /// stopped, so this always runs before `engine.start()`.
-    private func applyOutputDeviceIfNeeded() {
-        guard outputDeviceUID != appliedOutputDeviceUID else { return }
-        guard let uid = outputDeviceUID, var resolvedID = deviceID(forUID: uid) else {
-            appliedOutputDeviceUID = outputDeviceUID
-            return
-        }
+    private func applyOutputDeviceIfNeeded() throws {
+        // Resolve the default every time: returning from a manually selected
+        // device to nil must actually reset the audio unit, not just its label.
+        var resolvedID = outputDeviceUID.flatMap(deviceID(forUID:))
+            ?? caReadValue(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice,
+                           default: AudioDeviceID(kAudioObjectUnknown))
+        guard resolvedID != kAudioObjectUnknown else { throw PlayerError.noAudio }
+        guard resolvedID != appliedOutputDeviceID else { return }
         engine.stop()
-        guard let audioUnit = engine.outputNode.audioUnit else { return }
-        AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                             &resolvedID, UInt32(MemoryLayout<AudioDeviceID>.size))
-        appliedOutputDeviceUID = outputDeviceUID
+        guard let audioUnit = engine.outputNode.audioUnit else { throw PlayerError.noAudio }
+        let status = AudioUnitSetProperty(audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                          &resolvedID, UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard status == noErr else { throw CoreAudioError.status("set playback output device", status) }
+        appliedOutputDeviceID = resolvedID
     }
 
     /// Copies frames `[from, from+length)` into a fresh buffer via raw

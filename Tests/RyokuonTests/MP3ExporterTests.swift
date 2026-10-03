@@ -22,4 +22,18 @@ struct MP3ExporterTests {
         #expect(decoded.fileFormat.channelCount == 1)
         #expect(abs(Double(decoded.length) / decoded.fileFormat.sampleRate - 1.0) < 0.1)
     }
+    @Test func rejectsInvalidRangeWithoutTouchingExistingExport() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("out.mp3")
+        let original = Data("previous export".utf8)
+        try original.write(to: output)
+        #expect(throws: MP3ExporterError.self) {
+            try MP3Exporter.export(from: root.appendingPathComponent("call.wav"), range: -1 ... 1,
+                                   gains: .init(), bitrate: 64, mono: true, to: output)
+        }
+        #expect(try Data(contentsOf: output) == original)
+    }
+
 }

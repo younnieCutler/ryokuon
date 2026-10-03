@@ -3,6 +3,7 @@ import Foundation
 
 enum FLACConverterError: Error {
     case emptySource
+    case incompleteConversion
 }
 
 /// Q3: after transcription, `call.wav` (the STT-quality raw capture) isn't
@@ -15,6 +16,8 @@ enum FLACConverter {
         let wavURL = sessionDirectory.appendingPathComponent(AudioCapture.fileName)
         let flacURL = sessionDirectory.appendingPathComponent("call.flac")
 
+        let stagedURL = sessionDirectory.appendingPathComponent(".\(UUID().uuidString).flac")
+        defer { try? FileManager.default.removeItem(at: stagedURL) }
         let source = try AVAudioFile(forReading: wavURL)
         guard source.length > 0 else { throw FLACConverterError.emptySource }
 
@@ -24,7 +27,7 @@ enum FLACConverter {
             AVNumberOfChannelsKey: source.processingFormat.channelCount,
             AVLinearPCMBitDepthKey: 16,
         ]
-        try write(from: source, settings: settings, to: flacURL)
+        try write(from: source, settings: settings, to: stagedURL)
 
         // `write(to:)` must return with `destination` (the writing
         // AVAudioFile) fully out of scope before this reopens the same path
@@ -34,8 +37,12 @@ enum FLACConverter {
         // file ('fmt?' / kAudioFileUnsupportedDataFormatError) despite
         // `afinfo` reading the exact same bytes on disk just fine — the
         // FLAC container wasn't finalized yet.
-        let verify = try AVAudioFile(forReading: flacURL)
-        guard verify.length > 0 else { throw FLACConverterError.emptySource }
+        let verify = try AVAudioFile(forReading: stagedURL)
+        guard verify.length == source.length,
+              verify.processingFormat.channelCount == source.processingFormat.channelCount,
+              verify.processingFormat.sampleRate == source.processingFormat.sampleRate
+        else { throw FLACConverterError.incompleteConversion }
+        try AtomicFile.publish(stagedURL, to: flacURL)
 
         try FileManager.default.removeItem(at: wavURL)
         return flacURL
@@ -61,7 +68,7 @@ enum FLACConverter {
         while source.framePosition < source.length {
             readBuffer.frameLength = 0
             try source.read(into: readBuffer, frameCount: chunkFrames)
-            guard readBuffer.frameLength > 0 else { break }
+            guard readBuffer.frameLength > 0 else { throw FLACConverterError.incompleteConversion }
             try destination.write(from: readBuffer)
         }
     }

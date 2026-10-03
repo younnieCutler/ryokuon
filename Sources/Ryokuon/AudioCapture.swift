@@ -58,6 +58,9 @@ final class AudioCapture {
     /// dB level per track, reported after each drain cycle (~5x/sec). Cheap
     /// byproduct of the resample step — step 2's level meter and silence
     /// warning (Q18) subscribe to this.
+    var onError: ((Error) -> Void)?
+    private var writeError: Error? // accessed only by drainQueue
+
     var onLevel: ((_ meDB: Float, _ remoteDB: Float) -> Void)?
 
     var diagnostics: String {
@@ -130,39 +133,18 @@ final class AudioCapture {
         let status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, device.aggregateID, nil) {
             _, inputData, _, _, _ in
             let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
-            var channelIndex = 0
-            for buffer in buffers {
-                let channels = Int(buffer.mNumberChannels)
-                guard channels > 0, let raw = buffer.mData else { channelIndex += channels; continue }
-                let frames = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size / channels
-                let samples = raw.assumingMemoryBound(to: Float.self)
-
-                if channels == 1 {
-                    if micRange.contains(channelIndex) { micRing.write(samples, count: frames) }
-                    if tapRange.contains(channelIndex) { tapRing.write(samples, count: frames) }
-                } else {
-                    // Interleaved multi-channel buffer (e.g. a stereo mic) —
-                    // de-interleave per channel before handing to the rings.
-                    for offset in 0 ..< channels {
-                        let absolute = channelIndex + offset
-                        guard micRange.contains(absolute) || tapRange.contains(absolute) else { continue }
-                        var extracted = [Float](repeating: 0, count: frames)
-                        for frame in 0 ..< frames { extracted[frame] = samples[frame * channels + offset] }
-                        extracted.withUnsafeBufferPointer { pointer in
-                            guard let base = pointer.baseAddress else { return }
-                            if micRange.contains(absolute) { micRing.write(base, count: frames) }
-                            if tapRange.contains(absolute) { tapRing.write(base, count: frames) }
-                        }
-                    }
-                }
-                channelIndex += channels
-            }
+            AudioTrackMixer.write(buffers, channels: micRange, into: micRing)
+            AudioTrackMixer.write(buffers, channels: tapRange, into: tapRing)
         }
         guard status == noErr else { throw CoreAudioError.status("AudioDeviceCreateIOProcIDWithBlock", status) }
         procID = newProcID
 
         let startStatus = AudioDeviceStart(device.aggregateID, newProcID)
-        guard startStatus == noErr else { throw CoreAudioError.status("AudioDeviceStart", startStatus) }
+        guard startStatus == noErr else {
+            if let newProcID { AudioDeviceDestroyIOProcID(device.aggregateID, newProcID) }
+            procID = nil
+            throw CoreAudioError.status("AudioDeviceStart", startStatus)
+        }
     }
 
     /// Swaps the mic feeding this recording without stopping it — tears
@@ -180,6 +162,8 @@ final class AudioCapture {
             AudioDeviceDestroyIOProcID(device.aggregateID, procID)
             self.procID = nil
         }
+        // Drain old-rate samples before replacing their resamplers.
+        drainQueue.sync { self.drainAndWrite() }
         let oldRate = device.sampleRate
         try device.switchMic(toUID: uid)
         micRange = 0 ..< device.micChannels
@@ -207,16 +191,29 @@ final class AudioCapture {
         try startIOProc()
     }
 
+    deinit {
+        drainTimer?.cancel()
+        if let procID {
+            AudioDeviceStop(device.aggregateID, procID)
+            AudioDeviceDestroyIOProcID(device.aggregateID, procID)
+        }
+    }
+
     func stop() throws {
+        defer { device.stop() }
         drainTimer?.cancel()
         drainTimer = nil
         if let procID {
             AudioDeviceStop(device.aggregateID, procID)
             AudioDeviceDestroyIOProcID(device.aggregateID, procID)
         }
-        drainQueue.sync { self.drainAndWrite() } // flush whatever's left in the rings
+        procID = nil
+        let failure = drainQueue.sync {
+            self.drainAndWrite()
+            return self.writeError
+        }
         try writer.finish()
-        device.stop()
+        if let failure { throw failure }
     }
 
     private func drainAndWrite() {
@@ -231,8 +228,11 @@ final class AudioCapture {
             let remote = try convert(remoteSamples, using: remoteConverter)
             try writer.append(isMono ? downmix(me, remote) : interleave(left: me, right: remote))
         } catch {
-            // Priority 1 is not losing the recording. Log and keep going
-            // rather than crash the capture loop over one bad chunk.
+            // Preserve the first failure: stop must not claim a complete file.
+            if writeError == nil {
+                writeError = error
+                onError?(error)
+            }
             FileHandle.standardError.write("ryokuon: write error: \(error)\n".data(using: .utf8)!)
         }
 

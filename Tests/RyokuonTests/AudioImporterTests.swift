@@ -36,4 +36,16 @@ struct AudioImporterTests {
         #expect(session.state == .finished)
         #expect(try store.load(from: store.directory(for: session)).channels == 1)
     }
+    @Test func emptyImportLeavesNoSession() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("empty.wav")
+        try WAVWriter(url: source).finish()
+        let store = SessionStore(rootDirectory: root.appendingPathComponent("sessions"))
+        #expect(throws: (any Error).self) { try AudioImporter.importFile(source, store: store, language: "ja-JP") }
+        #expect(store.listSessions().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: store.rootDirectory.path).isEmpty)
+    }
+
 }

@@ -115,7 +115,7 @@ enum Transcriber {
         }
 
         let data = try JSONEncoder().encode(words)
-        try data.write(to: sessionDirectory.appendingPathComponent("raw.json"))
+        try data.write(to: sessionDirectory.appendingPathComponent("raw.json"), options: .atomic)
         return words
     }
 

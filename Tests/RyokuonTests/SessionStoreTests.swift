@@ -83,4 +83,66 @@ struct SessionStoreTests {
         let sessions = store.listSessions()
         #expect(sessions.first?.displayName == "newer")
     }
+    @Test func rejectsMetadataThatRedirectsSessionPaths() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        let (_, dir) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        let json = dir.appendingPathComponent("session.json")
+        var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        object["id"] = "../outside"
+        try JSONSerialization.data(withJSONObject: object).write(to: json)
+        #expect(throws: SessionError.self) { try store.load(from: dir) }
+        #expect(store.listSessions().isEmpty)
+    }
+
+    @Test func rejectsInvalidChannelCountsBeforeRecovery() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        var (session, dir) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        session.channels = -1
+        try store.save(session, in: dir)
+        #expect(throws: SessionError.self) { try store.load(from: dir) }
+        #expect(store.recoverCrashedSessions().isEmpty)
+    }
+
+    @Test func failedRecoveryDoesNotClaimSuccess() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        let (_, dir) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        // No call.wav: repair must fail instead of marking this recovered.
+        #expect(store.recoverCrashedSessions().isEmpty)
+        #expect(try store.load(from: dir).state == .recording)
+    }
+
+    @Test func concurrentCreatorsNeverShareDirectories() async throws {
+        let root = tempRoot()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ids = try await withThrowingTaskGroup(of: String.self) { group in
+            for _ in 0 ..< 40 {
+                group.addTask {
+                    let store = SessionStore(rootDirectory: root)
+                    return try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test").session.id
+                }
+            }
+            var ids: [String] = []
+            for try await id in group { ids.append(id) }
+            return ids
+        }
+        #expect(Set(ids).count == 40)
+        #expect(SessionStore(rootDirectory: root).listSessions().count == 40)
+    }
+
+    @Test func deletionFailureIsThrown() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        let (session, _) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        try store.delete(session)
+        #expect(throws: (any Error).self) { try store.delete(session) }
+    }
+
 }
