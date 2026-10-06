@@ -5,8 +5,8 @@ import Foundation
 /// raw.json + transcript.txt (step 3/4). The folder name is the stable ID
 /// (Q10) — `displayName` is what the user sees and can rename without
 /// touching any file paths.
-struct Session: Codable {
-    enum State: String, Codable {
+struct Session: Codable, Sendable {
+    enum State: String, Codable, Sendable {
         case recording
         case finished
         /// Header was 0-byte on launch (crash) and has been repaired from
@@ -14,12 +14,16 @@ struct Session: Codable {
         case recovered
     }
 
-    struct Gains: Codable {
+    struct Gains: Codable, Sendable {
         var me: Double = 1.0
         var remote: Double = 1.0
     }
 
     let id: String
+    /// In-memory location below the selected storage root. It is deliberately
+    /// not stored in session.json: moving a folder in Finder must not rewrite
+    /// the recording or make its metadata point at an old location.
+    var relativePath: String
     var displayName: String
     var language: String // BCP-47, e.g. "ja-JP" — Q7
     var targetBundleID: String?
@@ -38,6 +42,7 @@ struct Session: Codable {
          targetDisplayName: String, createdAt: Date, state: State, durationSeconds: Double,
          gains: Gains, channels: Int = 2) {
         self.id = id
+        self.relativePath = id
         self.displayName = displayName
         self.language = language
         self.targetBundleID = targetBundleID
@@ -52,6 +57,7 @@ struct Session: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        relativePath = id
         displayName = try container.decode(String.self, forKey: .displayName)
         language = try container.decode(String.self, forKey: .language)
         targetBundleID = try container.decodeIfPresent(String.self, forKey: .targetBundleID)
@@ -61,6 +67,11 @@ struct Session: Codable {
         durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
         gains = try container.decode(Gains.self, forKey: .gains)
         channels = try container.decodeIfPresent(Int.self, forKey: .channels) ?? 2
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, language, targetBundleID, targetDisplayName
+        case createdAt, state, durationSeconds, gains, channels
     }
 }
 
@@ -80,9 +91,11 @@ final class SessionStore {
 
     private(set) var rootDirectory: URL
 
-    init(rootDirectory: URL? = nil) {
+    init(rootDirectory: URL? = nil, createDirectory: Bool = true) {
         self.rootDirectory = rootDirectory ?? Self.loadConfiguredRoot()
-        try? FileManager.default.createDirectory(at: self.rootDirectory, withIntermediateDirectories: true)
+        if createDirectory {
+            try? FileManager.default.createDirectory(at: self.rootDirectory, withIntermediateDirectories: true)
+        }
     }
 
     static func loadConfiguredRoot() -> URL {
@@ -180,15 +193,19 @@ final class SessionStore {
             }
             return date
         }
-        let session = try decoder.decode(Session.self, from: data)
+        var session = try decoder.decode(Session.self, from: data)
         // Folder identity is authoritative. Never let edited metadata redirect
         // playback, export, or recursive deletion outside this folder.
-        guard session.id == directory.lastPathComponent,
+        let root = rootDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedDirectory = directory.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolvedDirectory.path.hasPrefix(root.path + "/"),
+              session.id == directory.lastPathComponent,
               session.id != ".", session.id != "..", !session.id.contains("/"),
               (1 ... 2).contains(session.channels),
               session.durationSeconds.isFinite, session.durationSeconds >= 0,
               session.gains.me.isFinite, session.gains.remote.isFinite
         else { throw SessionError.invalidMetadata(url) }
+        session.relativePath = String(directory.standardizedFileURL.path.dropFirst(rootDirectory.standardizedFileURL.path.count + 1))
         return session
     }
 
@@ -196,15 +213,11 @@ final class SessionStore {
     /// fact turns into a path, so callers (Player, Transcriber CLI hookup)
     /// don't each reconstruct it themselves.
     func directory(for session: Session) -> URL {
-        rootDirectory.appendingPathComponent(session.id, isDirectory: true)
+        rootDirectory.appendingPathComponent(session.relativePath, isDirectory: true)
     }
 
     func listSessions() -> [Session] {
-        let directories = (try? FileManager.default.contentsOfDirectory(
-            at: rootDirectory, includingPropertiesForKeys: nil)) ?? []
-        return directories
-            .compactMap { try? load(from: $0) }
-            .sorted { $0.createdAt > $1.createdAt }
+        AudioLibraryScanner.scan(root: rootDirectory).sessions
     }
 
     /// Q11: on launch, find every session still marked "recording" — that
@@ -214,11 +227,9 @@ final class SessionStore {
     @discardableResult
     func recoverCrashedSessions() -> [Session] {
         var recovered: [Session] = []
-        let directories = (try? FileManager.default.contentsOfDirectory(
-            at: rootDirectory, includingPropertiesForKeys: nil)) ?? []
-
-        for directory in directories {
-            guard var session = try? load(from: directory), session.state == .recording else { continue }
+        for found in listSessions() where found.state == .recording {
+            var session = found
+            let directory = directory(for: session)
 
             let callURL = directory.appendingPathComponent(AudioCapture.fileName)
             do {
@@ -238,8 +249,11 @@ final class SessionStore {
     /// Permanently removes the session's directory and everything in it.
     func delete(_ session: Session) throws {
         let directory = directory(for: session).standardizedFileURL
-        guard directory.deletingLastPathComponent().path == rootDirectory.standardizedFileURL.path,
-              !session.id.isEmpty, session.id != ".", session.id != "..", !session.id.contains("/")
+        let parts = session.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        let root = rootDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        guard !parts.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              parts.last == Substring(session.id),
+              directory.resolvingSymlinksInPath().path.hasPrefix(root.path + "/")
         else { throw SessionError.invalidMetadata(directory) }
         try FileManager.default.removeItem(at: directory)
     }

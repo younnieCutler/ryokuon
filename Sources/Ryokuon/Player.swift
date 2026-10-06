@@ -23,6 +23,7 @@ final class Player {
     private let playerNode = AVAudioPlayerNode()
     private var buffer: AVAudioPCMBuffer?
     private var loadedURL: URL?
+    private var loadedStamp: AudioFileStamp?
     private var startOffsetSeconds: TimeInterval = 0
     /// Bumped on every play/stop. `playerNode.stop()` fires the *previous*
     /// segment's completion handler, which lands after a seek has already
@@ -53,8 +54,10 @@ final class Player {
         stop()
         try applyOutputDeviceIfNeeded()
         guard from.isFinite else { throw PlayerError.invalidPosition }
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let stamp = AudioFileStamp(size: Int64(values.fileSize ?? 0), modifiedAt: values.contentModificationDate)
 
-        if loadedURL != url || buffer == nil {
+        if loadedURL != url || loadedStamp != stamp || buffer == nil {
             let file = try AVAudioFile(forReading: url)
             let format = file.processingFormat
             guard file.length > 0, file.length <= Int64(UInt32.max) else { throw PlayerError.noAudio }
@@ -64,6 +67,7 @@ final class Player {
             try file.read(into: full)
             buffer = full
             loadedURL = url
+            loadedStamp = stamp
             duration = Double(frameCount) / format.sampleRate
 
             // `engine.connect(_:to:format:)` with `format: nil` derives the
@@ -129,6 +133,16 @@ final class Player {
         generation += 1
         playerNode.stop()
         isPlaying = false
+    }
+
+    /// A file can be replaced at the same path in Finder. The next play must
+    /// read its new bytes rather than reuse the previously decoded buffer.
+    func invalidateCachedAudio() {
+        stop()
+        buffer = nil
+        loadedURL = nil
+        loadedStamp = nil
+        duration = 0
     }
 
     /// Sets the output unit's `kAudioOutputUnitProperty_CurrentDevice` to

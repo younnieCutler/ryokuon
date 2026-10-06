@@ -12,15 +12,18 @@ ROOT="${RYOKUON_ROOT:-$HOME/Documents/ryokuon}"
 usage() {
     cat <<EOF
 usage: ryokuon list
-       ryokuon show <session>
-       ryokuon search <session> <keyword>
-       ryokuon range <session> <startMs> <endMs>
+       ryokuon show <session-path>
+       ryokuon search <session-path> <keyword>
+       ryokuon range <session-path> <startMs> <endMs>
 EOF
     exit 1
 }
 
 require_transcript() {
     local session="$1"
+    case "$session" in
+        ""|/*|..|../*|*/../*|*/..) echo "invalid session path" >&2; exit 1 ;;
+    esac
     local path="$ROOT/$session/transcript.txt"
     if [[ ! -f "$path" ]]; then
         echo "no transcript.txt for session '$session' (looked in $path)" >&2
@@ -32,7 +35,12 @@ require_transcript() {
 cmd="${1:-}"
 case "$cmd" in
     list)
-        [[ -d "$ROOT" ]] && ls -1 "$ROOT" | sort -r
+        if [[ -d "$ROOT" ]]; then
+            while IFS= read -r -d '' metadata; do
+                path="${metadata#"$ROOT"/}"
+                dirname "$path"
+            done < <(find "$ROOT" -type f -name session.json -print0 2>/dev/null) | sort -r
+        fi
         ;;
     show)
         [[ $# -ge 2 ]] || usage

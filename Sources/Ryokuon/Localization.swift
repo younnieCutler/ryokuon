@@ -26,6 +26,8 @@ enum L10nKey {
     case settingsAppLanguage, settingsAppLanguageNote
     case settingsStorageFolder, settingsChangeFolder, settingsClose
     case settingsInputDevice, settingsOutputDevice, deviceSystemDefault
+    case settingsUpdates, updateCurrentVersion, updateCheck, updateChecking
+    case updateUpToDate, updateInstall, updatePreparing
     case sessionNamePlaceholder, sessionPlay, sessionStop
     case gainMe, gainRemote
     case transcribeButton, retranscribeButton, notTranscribedYet
@@ -53,6 +55,7 @@ enum L10nKey {
     case statusReady, statusRecording, statusProcessing
     case currentMicLabel, currentAppLabel
     case searchPlaceholder
+    case libraryRefresh, libraryImportForTranscription, libraryExpanded, libraryCollapsed
     case detailNoSelection
     case editButton, doneButton, deleteButton, renameButton
     case cancelButton, confirmButton
@@ -117,7 +120,18 @@ enum Localization {
             .statusGranted: "허용됨",
             .statusDenied: "거부됨",
             .statusNotDetermined: "대기중",
-            .emptyTitle: "아직 녹음이 없어요",
+            .emptyTitle: "아직 음원이 없어요",
+            .libraryRefresh: "폴더 새로고침",
+            .libraryImportForTranscription: "전사할 녹음으로 가져오기",
+            .libraryExpanded: "펼쳐짐",
+            .libraryCollapsed: "접힘",
+            .settingsUpdates: "앱 업데이트",
+            .updateCurrentVersion: "현재 버전",
+            .updateCheck: "GitHub에서 새 버전 확인",
+            .updateChecking: "새 버전 확인 중…",
+            .updateUpToDate: "최신 버전입니다 (%@)",
+            .updateInstall: "버전 %@ 설치 및 재실행",
+            .updatePreparing: "다운로드하고 검증하는 중…",
             .emptySubtitle: "아래에서 녹음을 시작하거나 오디오 파일을 끌어다 놓으세요",
             .recoveredBadge: "복구됨",
             .settingsTitle: "설정",
@@ -235,7 +249,18 @@ enum Localization {
             .statusGranted: "許可済み",
             .statusDenied: "拒否済み",
             .statusNotDetermined: "未確認",
-            .emptyTitle: "まだ録音がありません",
+            .emptyTitle: "音声ファイルがありません",
+            .libraryRefresh: "フォルダを更新",
+            .libraryImportForTranscription: "文字起こし用に読み込む",
+            .libraryExpanded: "展開中",
+            .libraryCollapsed: "折りたたみ中",
+            .settingsUpdates: "アプリのアップデート",
+            .updateCurrentVersion: "現在のバージョン",
+            .updateCheck: "GitHubで新しいバージョンを確認",
+            .updateChecking: "確認中…",
+            .updateUpToDate: "最新バージョンです (%@)",
+            .updateInstall: "バージョン%@をインストールして再起動",
+            .updatePreparing: "ダウンロードと検証中…",
             .emptySubtitle: "下から録音を始めるか、音声ファイルをドロップしてください",
             .recoveredBadge: "復旧済み",
             .settingsTitle: "設定",
@@ -353,7 +378,18 @@ enum Localization {
             .statusGranted: "Granted",
             .statusDenied: "Denied",
             .statusNotDetermined: "Not Determined",
-            .emptyTitle: "No recordings yet",
+            .emptyTitle: "No audio files yet",
+            .libraryRefresh: "Refresh Folder",
+            .libraryImportForTranscription: "Import for Transcription",
+            .libraryExpanded: "Expanded",
+            .libraryCollapsed: "Collapsed",
+            .settingsUpdates: "App Updates",
+            .updateCurrentVersion: "Current Version",
+            .updateCheck: "Check GitHub for Updates",
+            .updateChecking: "Checking for updates…",
+            .updateUpToDate: "Up to date (%@)",
+            .updateInstall: "Install Version %@ and Relaunch",
+            .updatePreparing: "Downloading and verifying…",
             .emptySubtitle: "Start a recording below, or drop an audio file here",
             .recoveredBadge: "Recovered",
             .settingsTitle: "Settings",

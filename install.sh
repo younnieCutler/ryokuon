@@ -20,9 +20,11 @@ ensure_not_recording() {
     pgrep -x "$APP_NAME" >/dev/null || return 0
     local root
     root="$(defaults read "$BUNDLE_ID" dev.ryokuon.storageRootPath 2>/dev/null || echo "$HOME/Documents/ryokuon")"
-    if grep -ls '"state" : "recording"' "$root"/*/session.json >/dev/null 2>&1; then
-        die "$APP_NAME is recording right now — stop the recording, then run this again."
-    fi
+    while IFS= read -r -d '' session; do
+        if grep -q '"state" : "recording"' "$session"; then
+            die "$APP_NAME is recording right now — stop the recording, then run this again."
+        fi
+    done < <(find "$root" -type f -name session.json -print0 2>/dev/null)
     say "Quitting the running $APP_NAME"
     pkill -TERM -x "$APP_NAME" || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x "$APP_NAME" >/dev/null || return 0; sleep 0.5; done

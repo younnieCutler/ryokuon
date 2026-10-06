@@ -19,6 +19,13 @@ final class AppState {
     private(set) var remoteLevelDB: Float = -.infinity
     private(set) var silenceWarning: String?
     private(set) var sessions: [Session] = []
+    private(set) var libraryNodes: [AudioLibraryNode] = []
+    private(set) var libraryError: String?
+    private(set) var libraryRevision = 0
+    @ObservationIgnored private var librarySnapshot = AudioLibrarySnapshot(nodes: [], sessions: [], error: nil)
+    @ObservationIgnored private var libraryWatcher: AudioLibraryWatcher?
+    @ObservationIgnored private var libraryRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var libraryScanSequence = 0
     var lastError: String?
 
     /// Remembered target so the menu bar item can read "녹음 시작 — Zoom"
@@ -106,10 +113,61 @@ final class AppState {
             lastError = t(.errorRecovered, recovered.count)
         }
         reloadSessions()
+        libraryWatcher = AudioLibraryWatcher { [weak self] in
+            Task { @MainActor in self?.scheduleLibraryRefresh() }
+        }
+        libraryWatcher?.start(root: sessionStore.rootDirectory)
     }
 
     func reloadSessions() {
-        sessions = sessionStore.listSessions()
+        applyLibrarySnapshot(AudioLibraryScanner.scan(root: sessionStore.rootDirectory))
+    }
+
+    private func applyLibrarySnapshot(_ snapshot: AudioLibrarySnapshot) {
+        if let path = playingAudioPath,
+           !snapshot.containsAudio(at: path) || snapshot.audioStamp(at: path) != playingAudioStamp {
+            stopPlayback()
+            player.invalidateCachedAudio()
+        }
+        librarySnapshot = snapshot
+        libraryNodes = snapshot.nodes
+        sessions = snapshot.sessions
+        libraryError = snapshot.error
+        libraryRevision += 1
+    }
+
+    /// Coalesce bursts of filesystem events, then scan away from the UI thread.
+    /// A sequence number prevents an old root's scan from replacing a newer one.
+    private func scheduleLibraryRefresh() {
+        libraryRefreshTask?.cancel()
+        libraryScanSequence += 1
+        let sequence = libraryScanSequence
+        let root = sessionStore.rootDirectory
+        libraryRefreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let snapshot = await Task.detached(priority: .utility) {
+                AudioLibraryScanner.scan(root: root)
+            }.value
+            guard !Task.isCancelled, sequence == libraryScanSequence,
+                  root == sessionStore.rootDirectory else { return }
+            applyLibrarySnapshot(snapshot)
+        }
+    }
+
+    func refreshLibrary() {
+        scheduleLibraryRefresh()
+    }
+
+    func audioNode(at relativePath: String) -> AudioLibraryNode? {
+        librarySnapshot.audioNode(at: relativePath)
+    }
+
+    func session(forAudioPath relativePath: String) -> Session? {
+        let name = URL(fileURLWithPath: relativePath).lastPathComponent
+        guard name == AudioCapture.fileName || name == AudioCapture.flacFileName else { return nil }
+        let parent = (relativePath as NSString).deletingLastPathComponent
+        return sessions.first { $0.relativePath == parent }
     }
 
     /// Manually chosen input device UID, overriding the system default mic
@@ -274,14 +332,15 @@ final class AppState {
         recordingElapsed = 0
         reloadSessions()
         // Same flow as an imported file: a finished recording goes straight to text.
-        if let finished = sessions.first(where: { $0.id == session.id }), finished.state == .finished {
+        if let finished = sessions.first(where: { $0.relativePath == session.relativePath }), finished.state == .finished {
             transcribeSession(finished)
         }
     }
 
     // MARK: - Playback (step 5, Q4)
 
-    private(set) var playingSessionID: String?
+    private(set) var playingAudioPath: String?
+    @ObservationIgnored private var playingAudioStamp: AudioFileStamp?
     /// Current position within the playing file, in seconds — polled from
     /// `player.currentTime` on a timer since `Player` isn't itself
     /// `@Observable`. Drives the transcript's current-line highlight and
@@ -297,15 +356,32 @@ final class AppState {
             lastError = t(.errorNoAudioFile)
             return
         }
+        let relativeAudioPath = session.relativePath + "/" + url.lastPathComponent
+        playAudio(at: url, relativePath: relativeAudioPath, from: from,
+                  meGain: session.gains.me, remoteGain: session.gains.remote)
+    }
+
+    func playExternalAudio(at relativePath: String, from: TimeInterval = 0) {
+        guard librarySnapshot.containsAudio(at: relativePath) else {
+            lastError = t(.errorNoAudioFile)
+            return
+        }
+        let url = sessionStore.rootDirectory.appendingPathComponent(relativePath)
+        playAudio(at: url, relativePath: relativePath, from: from, meGain: 1, remoteGain: 1)
+    }
+
+    private func playAudio(at url: URL, relativePath: String, from: TimeInterval,
+                           meGain: Double, remoteGain: Double) {
         stopPlayback()
         do {
             player.onFinish = { [weak self] in
-                self?.playingSessionID = nil
+                self?.playingAudioPath = nil
                 self?.stopPlaybackTimer()
             }
             player.outputDeviceUID = selectedOutputDeviceUID.isEmpty ? nil : selectedOutputDeviceUID
-            try player.play(url: url, from: from, meGain: session.gains.me, remoteGain: session.gains.remote)
-            playingSessionID = session.id
+            try player.play(url: url, from: from, meGain: meGain, remoteGain: remoteGain)
+            playingAudioPath = relativePath
+            playingAudioStamp = librarySnapshot.audioStamp(at: relativePath)
             playbackTime = from
             startPlaybackTimer()
         } catch {
@@ -322,7 +398,8 @@ final class AppState {
 
     func stopPlayback() {
         player.stop()
-        playingSessionID = nil
+        playingAudioPath = nil
+        playingAudioStamp = nil
         stopPlaybackTimer()
     }
 
@@ -356,7 +433,7 @@ final class AppState {
             var updated = try sessionStore.load(from: directory)
             change(&updated)
             try sessionStore.save(updated, in: directory)
-            if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = updated }
+            if let index = sessions.firstIndex(where: { $0.relativePath == session.relativePath }) { sessions[index] = updated }
             return true
         } catch {
             lastError = t(.errorMetadataSaveFailed, "\(error)")
@@ -369,12 +446,13 @@ final class AppState {
     }
 
     func canDelete(_ session: Session) -> Bool {
-        session.id != currentSession?.id && session.id != transcribingSessionID && !exportingSessionIDs.contains(session.id)
+        session.relativePath != currentSession?.relativePath
+            && session.relativePath != transcribingSessionID && !exportingSessionIDs.contains(session.relativePath)
     }
 
     func canExport(_ session: Session) -> Bool {
-        session.state != .recording && session.id != transcribingSessionID
-            && !isQueuedForTranscription(session.id) && !exportingSessionIDs.contains(session.id)
+        session.state != .recording && session.relativePath != transcribingSessionID
+            && !isQueuedForTranscription(session.relativePath) && !exportingSessionIDs.contains(session.relativePath)
     }
 
     // MARK: - Settings (Q9, Q10)
@@ -393,6 +471,9 @@ final class AppState {
         do {
             try sessionStore.setRootDirectory(url)
             stopPlayback()
+            libraryRefreshTask?.cancel()
+            libraryScanSequence += 1
+            libraryWatcher?.start(root: url)
             reloadSessions()
         } catch {
             lastError = t(.errorStorageChangeFailed, "\(error)")
@@ -415,10 +496,10 @@ final class AppState {
             return
         }
         for session in selected {
-            if playingSessionID == session.id { stopPlayback() }
+            if playingAudioPath?.hasPrefix(session.relativePath + "/") == true { stopPlayback() }
             do {
                 try sessionStore.delete(session)
-                transcribeQueue.removeAll { $0 == session.id }
+                transcribeQueue.removeAll { $0 == session.relativePath }
             } catch {
                 lastError = t(.errorDeleteFailed, "\(session.displayName): \(error)")
             }
@@ -438,8 +519,8 @@ final class AppState {
     /// GUI entry point a normal user actually has.
     func transcribeSession(_ session: Session, language newLanguage: String? = nil) {
         // call.wav is still being written while recording — nothing to read yet.
-        guard session.state != .recording, session.id != transcribingSessionID,
-              !exportingSessionIDs.contains(session.id) else { return }
+        guard session.state != .recording, session.relativePath != transcribingSessionID,
+              !exportingSessionIDs.contains(session.relativePath) else { return }
         var session = session
         // Picking a language from the menu sticks to the session (session.json)
         // — a later re-run and a queued run both use it.
@@ -448,10 +529,10 @@ final class AppState {
             session.language = newLanguage
         }
         guard transcribingSessionID == nil else {
-            if !transcribeQueue.contains(session.id) { transcribeQueue.append(session.id) }
+            if !transcribeQueue.contains(session.relativePath) { transcribeQueue.append(session.relativePath) }
             return
         }
-        transcribingSessionID = session.id
+        transcribingSessionID = session.relativePath
         transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
 
@@ -462,7 +543,7 @@ final class AppState {
                     transcribeProgress = t(.progressDetectingLanguage)
                     locale = try await Transcriber.detectLanguage(sessionDirectory: directory)
                     // Saved, so the header shows what was detected and ▾ can override it.
-                    if let current = sessions.first(where: { $0.id == session.id }) {
+                    if let current = sessions.first(where: { $0.relativePath == session.relativePath }) {
                         setLanguage(for: current, to: locale)
                     }
                 }
@@ -489,7 +570,7 @@ final class AppState {
             reloadSessions()
             while !transcribeQueue.isEmpty {
                 let nextID = transcribeQueue.removeFirst()
-                if let next = sessions.first(where: { $0.id == nextID }) { // skip ones deleted while waiting
+                if let next = sessions.first(where: { $0.relativePath == nextID }) { // skip ones deleted while waiting
                     transcribeSession(next)
                     break
                 }
@@ -535,6 +616,7 @@ final class AppState {
     func presentImportPanel() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.mpeg4Audio, .mp3, .wav]
+            + [UTType(filenameExtension: "flac")].compactMap { $0 }
         panel.allowsMultipleSelection = true
         guard panel.runModal() == .OK else { return }
         importAudio(panel.urls)
@@ -589,8 +671,8 @@ final class AppState {
             lastError = t(.errorExportFailed, "\(MP3ExporterError.invalidRange)")
             return false
         }
-        exportingSessionIDs.insert(session.id)
-        defer { exportingSessionIDs.remove(session.id) }
+        exportingSessionIDs.insert(session.relativePath)
+        defer { exportingSessionIDs.remove(session.relativePath) }
         let directory = sessionStore.directory(for: session)
         let isFull = range.lowerBound <= 0 && range.upperBound >= session.durationSeconds
         let suffix = isFull ? "" : "_\(Self.fileTime(range.lowerBound))-\(Self.fileTime(range.upperBound))"

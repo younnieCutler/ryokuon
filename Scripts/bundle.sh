@@ -27,6 +27,7 @@ cp "$BIN" "$APP/Contents/MacOS/Ryokuon"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Resources/update-helper.sh" "$APP/Contents/Resources/update-helper.sh"
 
 # MP3 export shells out to lame (CoreAudio can't encode MP3). Ship it inside
 # the app so a fresh Mac needs no Homebrew. Homebrew's lame links libmp3lame

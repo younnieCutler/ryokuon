@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.
 
 ## 保存場所
 
-録音ごとに `~/Documents/ryokuon/<日時>/` というフォルダができます。保存先は設定で変えられます。
+録音ごとに `~/Documents/ryokuon/<日時>/` というフォルダができます。保存先は設定で変えられます。Finderでこの保存先の下にプロジェクト用フォルダを作り、録音フォルダを移動して整理しても構いません。Ryokuonは下位フォルダまで自動で読み直します。
 
 | ファイル | 中身 |
 |---|---|
@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.
 | `raw.json` | 単語ごとの認識結果と信頼度 |
 | `session.json` | 名前、言語、長さなど |
 
-ターミナルで文字起こしを探したいときは `bin/ryokuon` が使えます（`list`、`show`、`search`、`range`）。
+ターミナルで文字起こしを探したいときは `bin/ryokuon` が使えます（`list`、`show`、`search`、`range`）。`list` に出る保存先からの相対パスを、ほかのコマンドに渡します。
 
 ## ソースからビルド
 
