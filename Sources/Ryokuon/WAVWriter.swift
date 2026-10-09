@@ -1,5 +1,16 @@
 import Foundation
 
+enum WAVWriterError: LocalizedError {
+    case sizeLimitReached
+    case invalidChannels
+    var errorDescription: String? {
+        switch self {
+        case .sizeLimitReached: "The WAV size limit was reached. Start a new recording to continue."
+        case .invalidChannels: "A recording must have one or two audio channels."
+        }
+    }
+}
+
 private extension Data {
     mutating func append<T: FixedWidthInteger>(littleEndian value: T) {
         var v = value.littleEndian
@@ -18,6 +29,7 @@ private extension Data {
 /// priority 1).
 final class WAVWriter {
     static let sampleRate: UInt32 = 16000
+    static let maximumDataBytes = UInt32.max - 36
     private static let headerSize = 44
 
     let url: URL
@@ -28,6 +40,7 @@ final class WAVWriter {
     private let syncEveryBytes: Int
 
     init(url: URL, channels: UInt16 = 1) throws {
+        guard (1...2).contains(channels) else { throw WAVWriterError.invalidChannels }
         self.url = url
         self.channels = channels
         syncEveryBytes = Int(Self.sampleRate) * Int(channels) * 2 * 5 // ~5s
@@ -40,6 +53,8 @@ final class WAVWriter {
     /// [L, R, L, R, ...] before calling.
     func append(_ samples: [Int16]) throws {
         guard !samples.isEmpty else { return }
+        guard UInt64(samples.count) * 2 <= UInt64(Self.maximumDataBytes - dataBytesWritten)
+        else { throw WAVWriterError.sizeLimitReached }
         let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
         try handle.seekToEnd()
         try handle.write(contentsOf: data)
@@ -92,6 +107,8 @@ final class WAVWriter {
     static func repairHeader(at url: URL, channels: UInt16 = 1) throws {
         let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
         guard size > headerSize else { return }
+        guard (1...2).contains(channels) else { throw WAVWriterError.invalidChannels }
+        guard size - UInt64(headerSize) <= UInt64(maximumDataBytes) else { throw WAVWriterError.sizeLimitReached }
         let dataBytes = UInt32(size - UInt64(headerSize))
         let handle = try FileHandle(forWritingTo: url)
         try handle.seek(toOffset: 0)

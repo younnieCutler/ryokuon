@@ -16,7 +16,8 @@ struct PlayerTests {
 
     /// Regression: seeking used to let the previous segment's completion
     /// handler mark playback finished — the position bar froze mid-play.
-    @Test func seekKeepsPositionAdvancing() async throws {
+    @Test(.enabled(if: !listOutputDevices().isEmpty, "An audio output device is required"))
+    func seekKeepsPositionAdvancing() async throws {
         let player = Player()
         var finished = 0
         player.onFinish = { finished += 1 }
@@ -33,7 +34,8 @@ struct PlayerTests {
         player.stop()
     }
 
-    @Test func finishingFiresOnFinishOnce() async throws {
+    @Test(.enabled(if: !listOutputDevices().isEmpty, "An audio output device is required"))
+    func finishingFiresOnFinishOnce() async throws {
         let player = Player()
         var finished = 0
         player.onFinish = { finished += 1 }

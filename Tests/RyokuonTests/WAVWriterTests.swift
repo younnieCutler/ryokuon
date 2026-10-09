@@ -8,6 +8,21 @@ import Testing
 /// tests simulate the crash by skipping `finish()` and check that
 /// `repairHeader` recovers the real size from the file alone.
 struct WAVWriterTests {
+    @Test func oversizedCrashFileIsRejectedWithoutTruncatingItsHeader() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let original = WAVWriter.header(dataBytes: 0)
+        try original.write(to: url)
+        let handle = try FileHandle(forWritingTo: url)
+        // Sparse extension exercises the boundary without allocating 4 GiB.
+        try handle.truncate(atOffset: UInt64(WAVWriter.maximumDataBytes) + 45)
+        try handle.close()
+        #expect(throws: WAVWriterError.self) { try WAVWriter.repairHeader(at: url) }
+        let read = try FileHandle(forReadingFrom: url)
+        defer { try? read.close() }
+        #expect(try read.read(upToCount: 44) == original)
+    }
+
     @Test func normalFinishProducesCorrectHeader() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".wav")

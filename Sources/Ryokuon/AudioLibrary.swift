@@ -1,5 +1,23 @@
 import Foundation
 
+/// Search session titles as well as filenames, retaining the containing tree.
+enum AudioLibrarySearch {
+    static func filter(_ nodes: [AudioLibraryNode], sessions: [Session], query: String) -> [AudioLibraryNode] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return nodes }
+        let titles = Dictionary(sessions.map { ($0.relativePath, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        func matching(_ nodes: [AudioLibraryNode]) -> [AudioLibraryNode] {
+            nodes.compactMap { node in
+                if node.name.localizedCaseInsensitiveContains(query)
+                    || titles[node.relativePath]?.localizedCaseInsensitiveContains(query) == true { return node }
+                let children = matching(node.children)
+                return node.isFolder && !children.isEmpty ? node.replacingChildren(children) : nil
+            }
+        }
+        return matching(nodes)
+    }
+}
+
 struct AudioFileStamp: Equatable, Sendable {
     let size: Int64
     let modifiedAt: Date?
@@ -31,9 +49,14 @@ struct AudioLibrarySnapshot: Sendable {
     let error: String?
 
     func audioNode(at relativePath: String) -> AudioLibraryNode? {
+        guard let found = node(at: relativePath), !found.isFolder else { return nil }
+        return found
+    }
+
+    func node(at relativePath: String) -> AudioLibraryNode? {
         func find(in nodes: [AudioLibraryNode]) -> AudioLibraryNode? {
             for node in nodes {
-                if node.relativePath == relativePath && !node.isFolder { return node }
+                if node.relativePath == relativePath { return node }
                 if let found = find(in: node.children) { return found }
             }
             return nil

@@ -4,6 +4,22 @@ import Testing
 @testable import Ryokuon
 
 struct AudioLibraryTests {
+    @Test func searchFindsRenamedSessionsAndTreatsWhitespaceAsEmpty() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        var (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        session.displayName = "Quarterly Review"
+        try store.save(session, in: directory)
+        try Data([1]).write(to: directory.appendingPathComponent("call.wav"))
+        let snapshot = AudioLibraryScanner.scan(root: root)
+        let results = AudioLibrarySearch.filter(snapshot.nodes, sessions: snapshot.sessions, query: "  REVIEW  ")
+        #expect(results.count == 1)
+        #expect(results.first?.children.first?.name == "call.wav")
+        #expect(AudioLibrarySearch.filter(snapshot.nodes, sessions: snapshot.sessions, query: "   ").count == snapshot.nodes.count)
+        #expect(AudioLibrarySearch.filter(snapshot.nodes, sessions: snapshot.sessions, query: "no match").isEmpty)
+    }
+
     @Test func nestedSessionsAndAudioMatchTheDisk() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

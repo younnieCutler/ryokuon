@@ -248,6 +248,15 @@ final class SessionStore {
 
     /// Permanently removes the session's directory and everything in it.
     func delete(_ session: Session) throws {
+        try FileManager.default.removeItem(at: validatedDirectory(for: session))
+    }
+
+    /// User-facing removal is recoverable through Finder's Trash.
+    func trash(_ session: Session) throws {
+        try FileManager.default.trashItem(at: validatedDirectory(for: session), resultingItemURL: nil)
+    }
+
+    private func validatedDirectory(for session: Session) throws -> URL {
         let directory = directory(for: session).standardizedFileURL
         let parts = session.relativePath.split(separator: "/", omittingEmptySubsequences: false)
         let root = rootDirectory.standardizedFileURL.resolvingSymlinksInPath()
@@ -255,7 +264,7 @@ final class SessionStore {
               parts.last == Substring(session.id),
               directory.resolvingSymlinksInPath().path.hasPrefix(root.path + "/")
         else { throw SessionError.invalidMetadata(directory) }
-        try FileManager.default.removeItem(at: directory)
+        return directory
     }
 
     private func wavDuration(at url: URL, channels: UInt16) -> Double {

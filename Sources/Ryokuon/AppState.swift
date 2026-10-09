@@ -13,6 +13,10 @@ final class AppState {
     let sessionStore: SessionStore
     let permissions = PermissionsManager()
     let player = Player()
+    var selectedRecordingProcessID: pid_t?
+    var isShowingPermissionSetup = false
+    var isShowingSettings = false
+    @ObservationIgnored private let trashSession: (Session) throws -> Void
 
     private(set) var isRecording = false
     private(set) var meLevelDB: Float = -.infinity
@@ -47,9 +51,8 @@ final class AppState {
         (Transcriber.autoLanguage, .langAuto), ("ja-JP", .langJa), ("ko-KR", .langKo), ("en-US", .langEn),
     ]
 
-    var language: String {
-        get { UserDefaults.standard.string(forKey: "dev.ryokuon.language") ?? Transcriber.autoLanguage }
-        set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.language") }
+    var language: String = UserDefaults.standard.string(forKey: "dev.ryokuon.language") ?? Transcriber.autoLanguage {
+        didSet { UserDefaults.standard.set(language, forKey: "dev.ryokuon.language") }
     }
 
     /// UI language — independent of `language` (the STT transcription
@@ -104,8 +107,9 @@ final class AppState {
     private var recordingStartDate: Date?
     private var recordingTimer: Timer?
 
-    init(sessionStore: SessionStore = SessionStore()) {
+    init(sessionStore: SessionStore = SessionStore(), trashSession: ((Session) throws -> Void)? = nil) {
         self.sessionStore = sessionStore
+        self.trashSession = trashSession ?? { try sessionStore.trash($0) }
         // Q11: repair anything a crash left behind before the user can see
         // or touch the session list.
         let recovered = sessionStore.recoverCrashedSessions()
@@ -163,6 +167,10 @@ final class AppState {
         librarySnapshot.audioNode(at: relativePath)
     }
 
+    func libraryNode(at relativePath: String) -> AudioLibraryNode? {
+        librarySnapshot.node(at: relativePath)
+    }
+
     func session(forAudioPath relativePath: String) -> Session? {
         let name = URL(fileURLWithPath: relativePath).lastPathComponent
         guard name == AudioCapture.fileName || name == AudioCapture.flacFileName else { return nil }
@@ -174,20 +182,19 @@ final class AppState {
     /// at capture start — "" means "use the system default" (unset). Setting
     /// this mid-recording also switches the live capture's mic immediately
     /// (`AudioCapture.switchMicDevice`), not just the next recording's.
-    var selectedMicDeviceUID: String {
-        get { UserDefaults.standard.string(forKey: "dev.ryokuon.micDeviceUID") ?? "" }
-        set {
-            let previous = selectedMicDeviceUID
-            UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.micDeviceUID")
+    var selectedMicDeviceUID: String = UserDefaults.standard.string(forKey: "dev.ryokuon.micDeviceUID") ?? "" {
+        didSet {
+            UserDefaults.standard.set(selectedMicDeviceUID, forKey: "dev.ryokuon.micDeviceUID")
             guard isRecording, let capture else { return }
             do {
-                try capture.switchMicDevice(uid: newValue.isEmpty ? nil : newValue)
+                try capture.switchMicDevice(uid: selectedMicDeviceUID.isEmpty ? nil : selectedMicDeviceUID)
                 lastError = nil
             } catch {
                 // The IOProc was stopped for the switch. Finalize the recording
                 // instead of showing an active timer with no input callbacks.
                 stop()
-                UserDefaults.standard.set(previous, forKey: "dev.ryokuon.micDeviceUID")
+                UserDefaults.standard.set(oldValue, forKey: "dev.ryokuon.micDeviceUID")
+                selectedMicDeviceUID = oldValue
                 lastError = t(.errorMicSwitchFailed, "\(error)")
             }
         }
@@ -195,9 +202,14 @@ final class AppState {
 
     /// Manually chosen playback output device UID — "" means the system
     /// default output.
-    var selectedOutputDeviceUID: String {
-        get { UserDefaults.standard.string(forKey: "dev.ryokuon.outputDeviceUID") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "dev.ryokuon.outputDeviceUID") }
+    var selectedOutputDeviceUID: String = UserDefaults.standard.string(forKey: "dev.ryokuon.outputDeviceUID") ?? "" {
+        didSet {
+            UserDefaults.standard.set(selectedOutputDeviceUID, forKey: "dev.ryokuon.outputDeviceUID")
+            guard let path = playingAudioPath, !isPlaybackPaused else { return }
+            let position = playbackTime
+            if let session = session(forAudioPath: path) { play(session, from: position) }
+            else { playExternalAudio(at: path, from: position) }
+        }
     }
 
     func availableInputDevices() -> [AudioIODevice] { listInputDevices() }
@@ -221,6 +233,20 @@ final class AppState {
         (try? listAudioProcesses().filter(\.isPlaying)) ?? []
     }
 
+    func recordingTarget(in processes: [AudioProcess]) -> AudioProcess? {
+        RecordingTargetSelection.choose(from: processes, selectedPID: selectedRecordingProcessID,
+                                        lastBundleID: lastTargetBundleID)
+    }
+
+    func toggleRecording() {
+        if isRecording { stop(); return }
+        guard let target = recordingTarget(in: playingProcesses()) else {
+            lastError = t(.recordTargetUnavailable)
+            return
+        }
+        start(target: target)
+    }
+
     func startWithLastTarget() {
         guard let bundleID = lastTargetBundleID,
               let process = (try? listAudioProcesses())?.first(where: { $0.bundleID == bundleID })
@@ -234,6 +260,7 @@ final class AppState {
     func start(target: AudioProcess) {
         guard !isRecording else { return }
         guard permissions.allGranted else {
+            isShowingPermissionSetup = true
             lastError = t(.errorPermissionsIncomplete)
             return
         }
@@ -258,6 +285,7 @@ final class AppState {
 
             newCapture.onError = { [weak self] error in
                 Task { @MainActor in
+                    self?.stop()
                     self?.lastError = self?.t(.errorStopFailed, "\(error)")
                 }
             }
@@ -315,6 +343,12 @@ final class AppState {
             session.durationSeconds = Double(capture.framesWritten) / Double(WAVWriter.sampleRate)
             try sessionStore.save(session, in: directory)
         } catch {
+            // The writer finalizes whatever reached disk even if capture failed.
+            // Preserve that partial recording with a recovery badge, rather than
+            // leaving an unusable recording-state row until the next launch.
+            session.state = .recovered
+            session.durationSeconds = Double(capture.framesWritten) / Double(WAVWriter.sampleRate)
+            try? sessionStore.save(session, in: directory)
             lastError = t(.errorStopFailed, "\(error)")
         }
 
@@ -340,6 +374,7 @@ final class AppState {
     // MARK: - Playback (step 5, Q4)
 
     private(set) var playingAudioPath: String?
+    private(set) var isPlaybackPaused = false
     @ObservationIgnored private var playingAudioStamp: AudioFileStamp?
     /// Current position within the playing file, in seconds — polled from
     /// `player.currentTime` on a timer since `Player` isn't itself
@@ -375,14 +410,21 @@ final class AppState {
         stopPlayback()
         do {
             player.onFinish = { [weak self] in
-                self?.playingAudioPath = nil
+                self?.playbackTime = self?.player.duration ?? 0
+                self?.isPlaybackPaused = true
                 self?.stopPlaybackTimer()
+            }
+            player.onError = { [weak self] error in
+                self?.stopPlayback()
+                self?.lastError = self?.t(.errorPlayFailed, "\(error)")
             }
             player.outputDeviceUID = selectedOutputDeviceUID.isEmpty ? nil : selectedOutputDeviceUID
             try player.play(url: url, from: from, meGain: meGain, remoteGain: remoteGain)
             playingAudioPath = relativePath
             playingAudioStamp = librarySnapshot.audioStamp(at: relativePath)
             playbackTime = from
+            isPlaybackPaused = false
+            lastError = nil
             startPlaybackTimer()
         } catch {
             lastError = t(.errorPlayFailed, "\(error)")
@@ -393,13 +435,54 @@ final class AppState {
     /// which is cheap here since `Player` caches the decoded buffer per URL
     /// and only re-reads from disk when the URL changes.
     func seekPlayback(_ session: Session, toSeconds seconds: TimeInterval) {
-        play(session, from: seconds)
+        guard seconds.isFinite else { return }
+        let position = min(max(seconds, 0), max(0, session.durationSeconds - 0.01))
+        if playingAudioPath?.hasPrefix(session.relativePath + "/") == true, isPlaybackPaused {
+            playbackTime = position
+        } else {
+            play(session, from: position)
+        }
+    }
+
+    func pausePlayback() {
+        guard playingAudioPath != nil, !isPlaybackPaused else { return }
+        playbackTime = min(max(player.currentTime, 0), player.duration)
+        player.stop()
+        isPlaybackPaused = true
+        stopPlaybackTimer()
+    }
+
+    func togglePlayback(_ session: Session) {
+        guard session.state != .recording else { return }
+        let isCurrent = playingAudioPath?.hasPrefix(session.relativePath + "/") == true
+        if isCurrent && !isPlaybackPaused { pausePlayback(); return }
+        let position = isCurrent && playbackTime < player.duration ? playbackTime : 0
+        play(session, from: position)
+    }
+
+    func toggleExternalPlayback(at path: String) {
+        let isCurrent = playingAudioPath == path
+        if isCurrent && !isPlaybackPaused { pausePlayback(); return }
+        let position = isCurrent && playbackTime < player.duration ? playbackTime : 0
+        playExternalAudio(at: path, from: position)
+    }
+
+    func seekExternalPlayback(at path: String, toSeconds seconds: TimeInterval, duration: TimeInterval) {
+        guard seconds.isFinite, duration.isFinite else { return }
+        let position = min(max(seconds, 0), max(0, duration - 0.01))
+        if playingAudioPath == path && isPlaybackPaused {
+            playbackTime = position
+        } else {
+            playExternalAudio(at: path, from: position)
+        }
     }
 
     func stopPlayback() {
         player.stop()
         playingAudioPath = nil
         playingAudioStamp = nil
+        isPlaybackPaused = false
+        playbackTime = 0
         stopPlaybackTimer()
     }
 
@@ -417,12 +500,13 @@ final class AppState {
         playbackTimer = nil
     }
 
-    /// Q4: gain is a stored value applied at playback/STT time, not a live
-    /// monitoring knob — this just persists it. Playing again (or the next
-    /// transcription run) picks up the new value; the audio file itself is
-    /// never touched.
+    /// Apply saved gains to playback without changing the original audio.
     func setGains(for session: Session, me: Double, remote: Double) {
-        persist(session) { $0.gains = .init(me: me, remote: remote) }
+        guard persist(session, change: { $0.gains = .init(me: me, remote: remote) }) else { return }
+        if playingAudioPath?.hasPrefix(session.relativePath + "/") == true, !isPlaybackPaused,
+           let updated = sessions.first(where: { $0.relativePath == session.relativePath }) {
+            play(updated, from: playbackTime)
+        }
     }
 
     /// Always mutate fresh metadata, and publish only a successful disk write.
@@ -434,6 +518,7 @@ final class AppState {
             change(&updated)
             try sessionStore.save(updated, in: directory)
             if let index = sessions.firstIndex(where: { $0.relativePath == session.relativePath }) { sessions[index] = updated }
+            lastError = nil
             return true
         } catch {
             lastError = t(.errorMetadataSaveFailed, "\(error)")
@@ -482,29 +567,41 @@ final class AppState {
 
     /// Q10: renaming only touches session.json — the folder name (the
     /// stable ID) never changes.
-    func rename(_ session: Session, to newName: String) {
+    @discardableResult
+    func rename(_ session: Session, to newName: String) -> Bool {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != session.displayName else { return }
-        persist(session) { $0.displayName = trimmed }
+        guard !trimmed.isEmpty else { return false }
+        guard trimmed != session.displayName else { return true }
+        return persist(session) { $0.displayName = trimmed }
     }
 
     /// Refuse the whole selection if a background writer owns any session.
-    func delete(_ ids: Set<String>) {
-        let selected = sessions.filter { ids.contains($0.id) }
+    @discardableResult
+    func delete(_ ids: Set<String>) -> Bool {
+        let selected = sessions.filter { ids.contains($0.relativePath) }
         guard selected.allSatisfy({ canDelete($0) }) else {
             lastError = t(.errorOperationBusy)
-            return
+            return false
         }
+        var succeeded = true
         for session in selected {
             if playingAudioPath?.hasPrefix(session.relativePath + "/") == true { stopPlayback() }
             do {
-                try sessionStore.delete(session)
+                try trashSession(session)
                 transcribeQueue.removeAll { $0 == session.relativePath }
             } catch {
+                succeeded = false
                 lastError = t(.errorDeleteFailed, "\(session.displayName): \(error)")
             }
         }
         reloadSessions()
+        return succeeded
+    }
+
+    var hasActiveWork: Bool { !canChangeStorageFolder || !transcribeQueue.isEmpty }
+
+    func cancelQueuedTranscription(_ session: Session) {
+        transcribeQueue.removeAll { $0 == session.relativePath }
     }
 
     // MARK: - Transcription (steps 3-5, run from the GUI)
@@ -659,7 +756,7 @@ final class AppState {
     /// Writes the selected range as MP3 and/or analysis MD into the session
     /// folder, then shows the result in Finder.
     func export(_ session: Session, range: ClosedRange<Double>, bitrate: Int, mono: Bool,
-                mp3: Bool, markdown: Bool) async -> Bool {
+                mp3: Bool, markdown: Bool, destination: URL? = nil, allowOverwrite: Bool = false) async -> Bool {
         guard canExport(session), mp3 || markdown else {
             lastError = t(.errorOperationBusy)
             return false
@@ -675,13 +772,21 @@ final class AppState {
         defer { exportingSessionIDs.remove(session.relativePath) }
         let directory = sessionStore.directory(for: session)
         let isFull = range.lowerBound <= 0 && range.upperBound >= session.durationSeconds
-        let suffix = isFull ? "" : "_\(Self.fileTime(range.lowerBound))-\(Self.fileTime(range.upperBound))"
-        let base = directory.appendingPathComponent(session.displayName.replacingOccurrences(of: "/", with: "-") + suffix)
         var written: [URL] = []
         do {
+            let plan = try SessionExportPlan(session: session, range: range, directory: destination ?? directory,
+                                             mp3: mp3, markdown: markdown)
+            guard allowOverwrite || plan.existingURLs.isEmpty else {
+                lastError = t(.errorExportExists)
+                return false
+            }
+            // Read the transcript before starting the encoder: a missing text file
+            // must not leave an MP3 behind from an otherwise invalid combined job.
+            let transcript = markdown
+                ? try String(contentsOf: directory.appendingPathComponent("transcript.txt"), encoding: .utf8) : nil
             if mp3 {
                 guard let audioURL = AudioCapture.audioFileURL(in: directory) else { throw MP3ExporterError.noAudio }
-                let mp3URL = base.appendingPathExtension("mp3")
+                guard let mp3URL = plan.mp3URL else { throw MP3ExporterError.invalidRange }
                 let gains = session.gains
                 try await Task.detached {
                     try MP3Exporter.export(from: audioURL, range: range, gains: gains, bitrate: bitrate,
@@ -690,13 +795,12 @@ final class AppState {
                 written.append(mp3URL)
             }
             if markdown {
-                let text = try String(contentsOf: directory.appendingPathComponent("transcript.txt"), encoding: .utf8)
+                guard let text = transcript, let mdURL = plan.markdownURL else { throw MP3ExporterError.invalidRange }
                 let md = TranscriptBuilder.markdown(
                     TranscriptBuilder.parse(text), title: session.displayName, createdAt: session.createdAt,
                     durationSeconds: session.durationSeconds, language: session.language,
                     rangeMs: isFull ? nil : Int(range.lowerBound * 1000) ... Int(range.upperBound * 1000)
                 )
-                let mdURL = base.appendingPathExtension("md")
                 try md.write(to: mdURL, atomically: true, encoding: .utf8)
                 written.append(mdURL)
             }
@@ -709,11 +813,6 @@ final class AppState {
         }
     }
 
-    /// `1:05` isn't filename-safe on every tool that touches the file — `0105`.
-    private static func fileTime(_ seconds: Double) -> String {
-        let total = Int(seconds)
-        return String(format: "%02d%02d", total / 60, total % 60)
-    }
 }
 
 extension SilenceWatchdog {

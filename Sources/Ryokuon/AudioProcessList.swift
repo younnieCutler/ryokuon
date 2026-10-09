@@ -64,6 +64,15 @@ struct AudioProcess: Identifiable {
     }
 }
 
+enum RecordingTargetSelection {
+    static func choose(from processes: [AudioProcess], selectedPID: pid_t?, lastBundleID: String?) -> AudioProcess? {
+        // An explicit choice must never silently fall back to another call.
+        if let selectedPID { return processes.first { $0.pid == selectedPID } }
+        return processes.first { $0.bundleID != nil && $0.bundleID == lastBundleID && !$0.isMenuBarUtility }
+            ?? processes.first { !$0.isMenuBarUtility }
+    }
+}
+
 enum CoreAudioError: Error, CustomStringConvertible {
     case status(String, OSStatus)
 
