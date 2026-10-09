@@ -2,10 +2,11 @@
 
 ## Status of this change
 
-Implementation and regression tests were authored on Linux. Swift/macOS compilation, GUI behavior, audio listening, speech-model execution and notarized distribution have not been validated by this editing session. GitHub CI must provide the target-platform build/test evidence. Do not treat the v0.1.3 artifact or the older PR #1 test report as validation of this branch.
+Implementation was authored on Linux. On macOS 26.6.2 / Xcode 26.2 (Swift 6.2.3), commit `2b37e78` passed a warnings-as-errors debug build, all 73 tests in 21 suites, and a release build: [CI evidence](https://github.com/younnieCutler/ryokuon/actions/runs/37953800502). Thread Sanitizer exited with signal 11 before tests, so that run failed; no sanitizer pass is claimed. CI now retries on the current Xcode 26.6 toolchain with isolated build output and retained diagnostics. GUI behavior, audio listening, speech-model execution and notarized distribution remain unverified. Do not treat the v0.1.3 artifact or older PR #1 report as validation of this branch.
 
 ## Implemented
 
+- Arrow-key tree navigation, confirmed keyboard deletion, selectable transcript text and a copy action.
 - Native list selection and direct opening of session folders; renamed titles are primary.
 - Folder detail browsing, whitespace-normalized search, no-results feedback and Finder reveal.
 - Pause/resume, ten-second navigation, EOF-safe seek, live saved gains and output changes.

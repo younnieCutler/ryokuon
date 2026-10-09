@@ -39,14 +39,16 @@ jobs:
           TSAN_OPTIONS: verbosity=2
         run: |
           set -o pipefail
-          swift test --sanitize=thread 2>&1 | tee .build/validation/thread-sanitizer.log
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          swift --version
+          swift test --scratch-path .build/tsan --sanitize=thread 2>&1 | tee .build/validation/thread-sanitizer.log
       - name: Diagnose sanitizer startup failure
         if: failure()
         shell: bash
         run: |
           test_binary="$(find .build -path "*/RyokuonPackageTests.xctest/Contents/MacOS/RyokuonPackageTests" -type f | head -n 1)"
           if [[ -n "$test_binary" ]]; then
-            xcrun lldb --batch -o run -o "thread backtrace all" -- "$test_binary" --testing-library swift-testing 2>&1 | tee .build/validation/sanitizer-backtrace.log
+            xcrun lldb --batch -o "settings set target.process.stop-on-exec false" -o run -o "thread backtrace all" -- "$test_binary" --testing-library swift-testing 2>&1 | tee .build/validation/sanitizer-backtrace.log
           fi
       - name: Retain validation evidence
         if: always()
