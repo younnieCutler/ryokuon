@@ -11,7 +11,7 @@ A native macOS meeting recorder with on-device transcription. Record a call, rev
 - Capture your microphone and one explicitly selected app. Headset recordings separate you and the remote side into left/right channels; built-in microphone recordings are mono to account for speaker bleed.
 - Transcribe Japanese, Korean and English using Apple's `SpeechAnalyzer`. Automatic language selection is heuristic; override it when needed.
 - Browse real folders, open a recording in one click, search renamed sessions, pause and resume, and jump back or forward ten seconds.
-- Click transcript lines to seek. Turn off playback-following while reading; searching does not pull you back to the playhead.
+- Click transcript timestamps to seek; select text without starting playback. Copy the displayed transcript (including search results) from the toolbar. Turn off playback-following while reading; searching does not pull you back to the playhead.
 - Import M4A, MP3, WAV or FLAC. Choose an export folder, set precise range boundaries, and explicitly confirm replacing existing files.
 - Move recordings to Finder's Trash, with confirmation. Active recording/processing prevents app termination, removal and storage changes.
 
@@ -42,6 +42,8 @@ Updates can be checked from Settings. Downloaded updates require the expected SH
 
 | Shortcut | Action |
 | --- | --- |
+| Arrow keys | Navigate folders and recordings |
+| Delete | Confirm moving the selected recording to Trash |
 | Command-O | Import audio |
 | Command-comma | Settings |
 | Command-1 | Open the library window |

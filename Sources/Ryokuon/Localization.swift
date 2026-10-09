@@ -13,6 +13,7 @@ import Foundation
 /// property) means every label just re-renders when the setting changes,
 /// no restart required.
 enum L10nKey {
+    case copyTranscript
     case continueWithoutRecording
     case sessionPause, skipBackward, skipForward, playbackPosition, followPlayback, dismissError, revealInFinder, rangeStart, rangeEnd, recordTargetUnavailable, openSystemSettings, permissionRecoveryHint, cancelQueued, reportIssue, privacySummary, quitBusyTitle, quitBusyMessage, exportFolder, chooseExportFolder, overwriteTitle, overwriteMessage, overwriteConfirm, errorExportExists
     case onboardingTitle, onboardingSubtitle
@@ -99,6 +100,7 @@ enum Localization {
 
     private static let table: [String: [L10nKey: String]] = [
         "ko": [
+            .copyTranscript: "표시된 전사 복사",
             .continueWithoutRecording: "녹음 권한은 나중에 설정하고 계속하기",
             .sessionPause: "일시정지",
             .skipBackward: "10초 뒤로",
@@ -252,6 +254,7 @@ enum Localization {
             .errorExportFailed: "내보내기 실패: %@",
         ],
         "ja": [
+            .copyTranscript: "表示中の文字起こしをコピー",
             .continueWithoutRecording: "録音の権限は後で設定して続ける",
             .sessionPause: "一時停止",
             .skipBackward: "10秒戻る",
@@ -405,6 +408,7 @@ enum Localization {
             .errorExportFailed: "書き出し失敗: %@",
         ],
         "en": [
+            .copyTranscript: "Copy displayed transcript",
             .continueWithoutRecording: "Continue and set up recording later",
             .sessionPause: "Pause",
             .skipBackward: "Back 10 seconds",

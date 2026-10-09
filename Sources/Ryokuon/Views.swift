@@ -315,6 +315,13 @@ private struct SessionSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .onMoveCommand { moveSelection($0) }
+                .onDeleteCommand {
+                    guard let selection, let session = appState.sessions.first(where: { $0.relativePath == selection }),
+                          appState.canDelete(session) else { return }
+                    pendingDeleteIDs = [session.relativePath]
+                    showDeleteConfirm = true
+                }
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
                 .overlay {
                     if visibleNodes.isEmpty {
@@ -413,6 +420,32 @@ private struct SessionSidebar: View {
 
     private func toggleSelection(_ id: String) {
         if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection) {
+        let rows = visibleNodes
+        guard !rows.isEmpty else { return }
+        guard let selection, let index = rows.firstIndex(where: { $0.id == selection }) else {
+            self.selection = rows.first?.id
+            return
+        }
+        let node = rows[index].node
+        switch direction {
+        case .up: self.selection = rows[max(0, index - 1)].id
+        case .down: self.selection = rows[min(rows.count - 1, index + 1)].id
+        case .right:
+            guard node.isFolder else { return }
+            if expandedFolders.contains(node.relativePath) { self.selection = node.children.first?.relativePath ?? selection }
+            else { expandedFolders.insert(node.relativePath) }
+        case .left:
+            if node.isFolder && expandedFolders.contains(node.relativePath) {
+                expandedFolders.remove(node.relativePath)
+            } else {
+                let parent = (selection as NSString).deletingLastPathComponent
+                if !parent.isEmpty { self.selection = parent }
+            }
+        @unknown default: break
+        }
     }
 }
 
@@ -922,10 +955,11 @@ struct SessionDetailPane: View {
             } else {
                 ScrollViewReader { proxy in
                     List(filteredLines) { line in
-                        TranscriptRow(line: line, query: query, isCurrent: line.id == currentLineID)
+                        TranscriptRow(line: line, query: query, isCurrent: line.id == currentLineID) {
+                            appState.seekPlayback(session, toSeconds: line.startSeconds)
+                        }
                             .id(line.id)
                             .contentShape(Rectangle())
-                            .onTapGesture { appState.seekPlayback(session, toSeconds: line.startSeconds) }
                             .accessibilityAction { appState.seekPlayback(session, toSeconds: line.startSeconds) }
                     }
                     .listStyle(.plain)
@@ -957,6 +991,18 @@ struct SessionDetailPane: View {
                 Button { showingRename = true } label: { Image(systemName: "pencil") }
                     .help(appState.t(.renameButton))
                     .accessibilityLabel(appState.t(.renameButton))
+            }
+            if hasText {
+                ToolbarItem {
+                    Button {
+                        let text = filteredLines.map { "\(formattedDuration($0.startSeconds)) \($0.speaker): \($0.text)" }.joined(separator: "\n")
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    } label: { Image(systemName: "doc.on.doc") }
+                    .help(appState.t(.copyTranscript))
+                    .accessibilityLabel(appState.t(.copyTranscript))
+                    .disabled(filteredLines.isEmpty)
+                }
             }
             // Exactly one prominent button: the next step. No text yet ->
             // convert; text exists -> export. The other stays plain.
@@ -1261,19 +1307,24 @@ private struct TranscriptRow: View {
     let line: TranscriptLine
     let query: String
     let isCurrent: Bool
+    let onSeek: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: RTheme.Spacing.sm) {
-            Text(timestamp(line.startMs))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .trailing)
+            Button(action: onSeek) {
+                Text(timestamp(line.startMs))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 44, alignment: .trailing)
+            }
+            .buttonStyle(.plain)
             Text(line.speaker)
                 .font(.caption.bold())
                 .foregroundStyle(line.speaker == "M" ? Color.accentColor : Color.secondary)
                 .frame(width: 16)
             highlightedText
                 .font(.callout)
+                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 3)

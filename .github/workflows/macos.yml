@@ -32,8 +32,22 @@ jobs:
           mkdir -p .build/validation
           swift build -Xswiftc -warnings-as-errors 2>&1 | tee .build/validation/build.log
           swift test 2>&1 | tee .build/validation/tests.log
-          swift test --sanitize=thread 2>&1 | tee .build/validation/thread-sanitizer.log
           swift build -c release 2>&1 | tee .build/validation/release-build.log
+      - name: Thread Sanitizer
+        shell: bash
+        env:
+          TSAN_OPTIONS: verbosity=2
+        run: |
+          set -o pipefail
+          swift test --sanitize=thread 2>&1 | tee .build/validation/thread-sanitizer.log
+      - name: Diagnose sanitizer startup failure
+        if: failure()
+        shell: bash
+        run: |
+          test_binary="$(find .build -path "*/RyokuonPackageTests.xctest/Contents/MacOS/RyokuonPackageTests" -type f | head -n 1)"
+          if [[ -n "$test_binary" ]]; then
+            xcrun lldb --batch -o run -o "thread backtrace all" -- "$test_binary" --testing-library swift-testing 2>&1 | tee .build/validation/sanitizer-backtrace.log
+          fi
       - name: Retain validation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
