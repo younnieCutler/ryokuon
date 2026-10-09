@@ -3,12 +3,45 @@ import SwiftUI
 
 struct RyokuonApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         Window("Ryokuon", id: "main") {
             MainWindowView(appState: appDelegate.appState)
+                .onAppear { appDelegate.openMainWindow = { openWindow(id: "main") } }
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 1000, height: 700)
+        .windowResizability(.automatic)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button(appDelegate.appState.t(.menuOpenSessions)) {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+            }
+            CommandGroup(after: .newItem) {
+                Button(appDelegate.appState.t(.importButton)) { appDelegate.appState.presentImportPanel() }
+                    .keyboardShortcut("o", modifiers: .command)
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button(appDelegate.appState.t(.settingsTitle)) {
+                    appDelegate.openMainWindow?()
+                    NSApp.activate(ignoringOtherApps: true)
+                    appDelegate.appState.isShowingSettings = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandMenu("Ryokuon") {
+                Button(appDelegate.appState.t(appDelegate.appState.isRecording ? .recordingStop : .startRecording)) {
+                    appDelegate.appState.toggleRecording()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!appDelegate.appState.permissions.allGranted)
+                Button(appDelegate.appState.t(.libraryRefresh)) { appDelegate.appState.refreshLibrary() }
+                    .keyboardShortcut("r", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -20,16 +53,18 @@ struct RyokuonApp: App {
 /// is the fallback: mature API, not dependent on whatever `MenuBarExtra`'s
 /// hosting is doing wrong here.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let appState = AppState()
+    var openMainWindow: (() -> Void)?
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // menu bar utility, no Dock icon
+        NSApp.setActivationPolicy(.regular) // discoverable in Dock and Command-Tab, with a menu-bar companion
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.statusImage(symbol: "waveform")
         item.menu = buildMenu()
+        item.menu?.delegate = self
         statusItem = item
 
         withObservationTracking {
@@ -52,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem?.button?.image = Self.statusImage(symbol: symbol)
         statusItem?.menu = buildMenu()
+        statusItem?.menu?.delegate = self
 
         // Observation tracking only fires once per registration — re-arm it.
         withObservationTracking {
@@ -91,9 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if appState.isRecording {
             menu.addItem(withTitle: appState.t(.recordingStop), action: #selector(stopRecording), keyEquivalent: "")
                 .target = self
-        } else if let name = appState.lastTargetDisplayName {
-            menu.addItem(withTitle: appState.t(.startRecordingWithName, name),
-                        action: #selector(startWithLastTarget), keyEquivalent: "")
+        } else if let target = appState.recordingTarget(in: appState.playingProcesses()) {
+            menu.addItem(withTitle: appState.t(.startRecordingWithName, target.displayName),
+                        action: #selector(toggleRecording), keyEquivalent: "")
                 .target = self
         }
 
@@ -106,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             for process in processes {
                 let entry = submenu.addItem(withTitle: process.displayName,
-                                            action: #selector(startWithPicked(_:)), keyEquivalent: "")
+                                            action: #selector(selectTarget(_:)), keyEquivalent: "")
                 entry.target = self
                 entry.representedObject = process
             }
@@ -126,15 +162,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func stopRecording() { appState.stop() }
-    @objc private func startWithLastTarget() { appState.startWithLastTarget() }
+    @objc private func toggleRecording() { appState.toggleRecording() }
 
-    @objc private func startWithPicked(_ sender: NSMenuItem) {
+    @objc private func selectTarget(_ sender: NSMenuItem) {
         guard let process = sender.representedObject as? AudioProcess else { return }
-        appState.start(target: process)
+        appState.selectedRecordingProcessID = process.pid
+        openSessionWindow()
+    }
+
+    // Query the current app list when the menu opens, rather than displaying
+    // the processes that happened to exist at launch.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let refreshed = buildMenu()
+        menu.removeAllItems()
+        for item in refreshed.items {
+            refreshed.removeItem(item)
+            menu.addItem(item)
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !appState.hasActiveWork else {
+            let alert = NSAlert()
+            alert.messageText = appState.t(.quitBusyTitle)
+            alert.informativeText = appState.t(.quitBusyMessage)
+            alert.addButton(withTitle: appState.t(.confirmButton))
+            alert.runModal()
+            return .terminateCancel
+        }
+        appState.stopPlayback()
+        return .terminateNow
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { openSessionWindow() }
+        return true
     }
 
     @objc private func openSessionWindow() {
         NSApp.activate(ignoringOtherApps: true)
+        openMainWindow?()
         for window in NSApp.windows where window.identifier?.rawValue == "main" {
             window.makeKeyAndOrderFront(nil)
         }

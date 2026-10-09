@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import SwiftUI
 
@@ -5,14 +6,33 @@ struct MainWindowView: View {
     let appState: AppState
 
     var body: some View {
-        Group {
-            if appState.permissions.allGranted {
-                RyokuonSplitView(appState: appState)
-            } else {
-                OnboardingView(appState: appState)
+        RyokuonSplitView(appState: appState)
+        .frame(minWidth: 520, minHeight: 380)
+        .onAppear {
+            if !appState.permissions.allGranted { appState.isShowingPermissionSetup = true }
+        }
+        .toolbar {
+            if !appState.permissions.allGranted {
+                ToolbarItem {
+                    Button { appState.isShowingPermissionSetup = true } label: {
+                        Label(appState.t(.onboardingTitle), systemImage: "mic.badge.plus")
+                    }
+                }
             }
         }
-        .frame(minWidth: 520, minHeight: 380)
+        .sheet(isPresented: Binding(
+            get: { appState.isShowingPermissionSetup },
+            set: { appState.isShowingPermissionSetup = $0 }
+        )) {
+            OnboardingView(appState: appState)
+                .frame(minWidth: 440, idealWidth: 520, minHeight: 440)
+        }
+        .onChange(of: appState.permissions.allGranted) { _, granted in
+            if granted { appState.isShowingPermissionSetup = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            appState.permissions.refreshMicrophoneStatus()
+        }
     }
 }
 
@@ -22,6 +42,7 @@ struct MainWindowView: View {
 /// the system prompt appears.
 struct OnboardingView: View {
     let appState: AppState
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.lg) {
@@ -66,7 +87,18 @@ struct OnboardingView: View {
             }
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
+            HStack {
+                Button(appState.t(.openSystemSettings)) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+                }
+                Button(appState.t(.settingsChangeFolder)) { appState.changeStorageFolder() }
+            }
+            Text(appState.t(.permissionRecoveryHint))
+                .font(.caption).foregroundStyle(.secondary)
+
             Spacer()
+            Button(appState.t(.continueWithoutRecording)) { dismiss() }
+                .keyboardShortcut(.cancelAction)
         }
         .padding(RTheme.Spacing.xl)
     }
@@ -119,21 +151,27 @@ private struct PermissionRow: View {
 struct RyokuonSplitView: View {
     let appState: AppState
     @State private var selection: String?
-    @State private var showingSettings = false
     @State private var isEditing = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var wasAutoCollapsed = false
+
+    private var selectedSession: Session? {
+        guard let selection else { return nil }
+        return appState.sessions.first { $0.relativePath == selection }
+            ?? appState.session(forAudioPath: selection)
+    }
 
     var body: some View {
-        GeometryReader { geometry in
+        GeometryReader { _ in
             NavigationSplitView(columnVisibility: $columnVisibility) {
                 SessionSidebar(appState: appState, selection: $selection, isEditing: $isEditing)
                     .navigationSplitViewColumnWidth(min: 190, ideal: 260, max: 340)
             } detail: {
-                if let selection, let node = appState.audioNode(at: selection) {
-                    if let session = appState.session(forAudioPath: selection) {
-                        SessionDetailPane(appState: appState, session: session)
-                            .id(session.relativePath)
+                if let session = selectedSession {
+                    SessionDetailPane(appState: appState, session: session)
+                        .id(session.relativePath)
+                } else if let selection, let node = appState.libraryNode(at: selection) {
+                    if node.isFolder {
+                        FolderDetailPane(appState: appState, node: node, selection: self.$selection)
                     } else {
                         ExternalAudioDetailPane(appState: appState, node: node)
                             .id(node.relativePath)
@@ -152,11 +190,10 @@ struct RyokuonSplitView: View {
             }
             .onAppear {
                 appState.reloadSessions()
-                adjustColumns(for: geometry.size.width)
             }
-            .onChange(of: geometry.size.width) { _, width in adjustColumns(for: width) }
             .onChange(of: appState.libraryRevision) { _, _ in
-                if let selection, appState.audioNode(at: selection) == nil { self.selection = nil }
+                if let selection, appState.libraryNode(at: selection) == nil,
+                   appState.sessions.allSatisfy({ $0.relativePath != selection }) { self.selection = nil }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 appState.refreshLibrary()
@@ -168,30 +205,22 @@ struct RyokuonSplitView: View {
                             .labelStyle(.iconOnly)
                     }
                     .help(appState.t(.importHelp))
+                    .keyboardShortcut("o", modifiers: .command)
                 }
                 ToolbarSpacer(.fixed)
                 ToolbarItem {
-                    Button { showingSettings = true } label: {
+                    Button { appState.isShowingSettings = true } label: {
                         Image(systemName: "gearshape")
                     }
                     .help(appState.t(.settingsTitle))
                 }
             }
-            .sheet(isPresented: $showingSettings) {
+            .sheet(isPresented: Binding(get: { appState.isShowingSettings }, set: { appState.isShowingSettings = $0 })) {
                 SettingsSheetView(appState: appState)
             }
         }
     }
 
-    private func adjustColumns(for width: CGFloat) {
-        if width < 760, columnVisibility == .all {
-            columnVisibility = .detailOnly
-            wasAutoCollapsed = true
-        } else if width >= 760, wasAutoCollapsed {
-            columnVisibility = .all
-            wasAutoCollapsed = false
-        }
-    }
 }
 
 private struct SessionSidebar: View {
@@ -212,18 +241,7 @@ private struct SessionSidebar: View {
     }
 
     private var filteredNodes: [AudioLibraryNode] {
-        guard !searchText.isEmpty else { return appState.libraryNodes }
-        func filtered(_ nodes: [AudioLibraryNode]) -> [AudioLibraryNode] {
-            nodes.compactMap { node in
-                let matches = node.name.localizedCaseInsensitiveContains(searchText)
-                    || (node.isFolder && appState.sessions.first { $0.relativePath == node.relativePath }?
-                        .displayName.localizedCaseInsensitiveContains(searchText) == true)
-                if matches { return node }
-                let children = filtered(node.children)
-                return node.isFolder && !children.isEmpty ? node.replacingChildren(children) : nil
-            }
-        }
-        return filtered(appState.libraryNodes)
+        AudioLibrarySearch.filter(appState.libraryNodes, sessions: appState.sessions, query: searchText)
     }
 
     private var visibleNodes: [VisibleNode] {
@@ -231,7 +249,7 @@ private struct SessionSidebar: View {
         func append(_ nodes: [AudioLibraryNode], depth: Int) {
             for node in nodes {
                 result.append(VisibleNode(node: node, depth: depth))
-                if node.isFolder && (expandedFolders.contains(node.relativePath) || !searchText.isEmpty) {
+                if node.isFolder && (expandedFolders.contains(node.relativePath) || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                     append(node.children, depth: depth + 1)
                 }
             }
@@ -268,7 +286,7 @@ private struct SessionSidebar: View {
                 ContentUnavailableView(appState.t(.emptyTitle), systemImage: "waveform",
                                        description: Text(appState.t(.emptySubtitle)))
             } else {
-                List {
+                List(selection: $selection) {
                     ForEach(visibleNodes) { visible in
                         let node = visible.node
                         let session = node.isFolder
@@ -278,9 +296,8 @@ private struct SessionSidebar: View {
                             appState: appState, node: node, session: session,
                             depth: visible.depth,
                             isEditing: isEditing, isSelected: selection == node.relativePath,
-                            isExpanded: expandedFolders.contains(node.relativePath) || !searchText.isEmpty,
+                            isExpanded: expandedFolders.contains(node.relativePath) || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                             isMarkedForDeletion: selectedIDs.contains(node.relativePath),
-                            onSelect: { if !node.isFolder { selection = node.relativePath } },
                             onToggleExpand: {
                                 if expandedFolders.contains(node.relativePath) {
                                     expandedFolders.remove(node.relativePath)
@@ -294,10 +311,16 @@ private struct SessionSidebar: View {
                                 showDeleteConfirm = true
                             }
                         )
+                        .tag(node.relativePath)
                     }
                 }
                 .listStyle(.sidebar)
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
+                .overlay {
+                    if visibleNodes.isEmpty {
+                        ContentUnavailableView.search(text: searchText)
+                    }
+                }
             }
             if isEditing && !selectedIDs.isEmpty {
                 Button(role: .destructive) { pendingDeleteIDs = selectedIDs; showDeleteConfirm = true } label: {
@@ -318,11 +341,16 @@ private struct SessionSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let error = appState.lastError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .padding(RTheme.Spacing.sm)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .top) {
+                    Text(error).textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    Button { appState.lastError = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(appState.t(.dismissError))
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .padding(RTheme.Spacing.sm)
             }
             if let error = appState.libraryError {
                 Text(error)
@@ -335,6 +363,17 @@ private struct SessionSidebar: View {
             RecordingControlBar(appState: appState)
         }
         .onChange(of: isEditing) { _, newValue in if !newValue { selectedIDs.removeAll() } }
+        .onChange(of: selection) { _, path in
+            guard let path else { return }
+            var parent = (path as NSString).deletingLastPathComponent
+            while !parent.isEmpty {
+                expandedFolders.insert(parent)
+                parent = (parent as NSString).deletingLastPathComponent
+            }
+        }
+        .onChange(of: appState.libraryRevision) { _, _ in
+            selectedIDs.formIntersection(Set(appState.sessions.filter { appState.canDelete($0) }.map(\.relativePath)))
+        }
         .dropDestination(for: URL.self) { urls, _ in
             let audio = urls.filter { AudioLibraryScanner.audioExtensions.contains($0.pathExtension.lowercased()) }
             appState.importAudio(audio)
@@ -361,7 +400,7 @@ private struct SessionSidebar: View {
             isPresented: $showDeleteConfirm, titleVisibility: .visible
         ) {
             Button(appState.t(.deleteButton), role: .destructive) {
-                appState.delete(pendingDeleteIDs)
+                guard appState.delete(pendingDeleteIDs) else { return }
                 pendingDeleteIDs.removeAll()
                 selectedIDs.removeAll()
                 isEditing = false
@@ -386,7 +425,6 @@ private struct LibraryNodeRow: View {
     let isSelected: Bool
     let isExpanded: Bool
     let isMarkedForDeletion: Bool
-    let onSelect: () -> Void
     let onToggleExpand: () -> Void
     let onToggleDelete: () -> Void
     let onDelete: () -> Void
@@ -396,16 +434,9 @@ private struct LibraryNodeRow: View {
     @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
-        Group {
-            if node.isFolder {
-                rowContent
-            } else {
-                Button(action: onSelect) { rowContent }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(node.name)
-            }
-        }
+        rowContent
         .contextMenu {
+            Button(appState.t(.revealInFinder)) { revealInFinder() }
             if !isEditing, let session {
                 Button(appState.t(.renameButton), action: startRenaming)
                 Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
@@ -451,10 +482,10 @@ private struct LibraryNodeRow: View {
                             }
                             .help(session.displayName)
                 } else {
-                    Text(node.name).lineLimit(1).truncationMode(.middle)
+                    Text(session?.displayName ?? node.name).lineLimit(1).truncationMode(.middle)
                 }
                 if let session {
-                    Text("\(session.displayName) · \(formattedDuration(session.durationSeconds))")
+                    Text("\(session.targetDisplayName) · \(formattedDuration(session.durationSeconds))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -463,6 +494,7 @@ private struct LibraryNodeRow: View {
             Spacer(minLength: 0)
             if !isEditing, session != nil {
                 Menu {
+                    Button(appState.t(.revealInFinder)) { revealInFinder() }
                     Button(appState.t(.renameButton), action: startRenaming)
                     Button(appState.t(.deleteButton), role: .destructive, action: onDelete)
                         .disabled(session.map { !appState.canDelete($0) } ?? true)
@@ -488,10 +520,15 @@ private struct LibraryNodeRow: View {
         renameFieldFocused = true
     }
 
+    private func revealInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([
+            appState.sessionStore.rootDirectory.appendingPathComponent(node.relativePath)
+        ])
+    }
+
     private func commitRename() {
         guard let session else { return }
-        appState.rename(session, to: renameText)
-        isRenaming = false
+        if appState.rename(session, to: renameText) { isRenaming = false }
     }
 }
 
@@ -508,7 +545,6 @@ func formattedDuration(_ seconds: Double) -> String {
 struct RecordingControlBar: View {
     let appState: AppState
     /// The app picked in the idle picker; nil = last recorded app, else the first playing one.
-    @State private var selectedBundleID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
@@ -516,6 +552,7 @@ struct RecordingControlBar: View {
                 HStack(spacing: RTheme.Spacing.sm) {
                     RecordingDot()
                     Text(appState.t(.statusRecording)).font(.callout.weight(.medium))
+                    Text(formattedDuration(appState.recordingElapsed)).font(.caption.monospacedDigit())
                     Spacer()
                     Text(appState.lastTargetDisplayName ?? "")
                         .font(.caption).foregroundStyle(.secondary)
@@ -568,9 +605,7 @@ struct RecordingControlBar: View {
     /// picker; the button names it so there's no doubt what gets recorded.
     @ViewBuilder
     private func idleControls(processes: [AudioProcess]) -> some View {
-        let target = processes.first { $0.bundleID != nil && $0.bundleID == selectedBundleID }
-            ?? processes.first { $0.bundleID != nil && $0.bundleID == appState.lastTargetBundleID }
-            ?? processes.first { !$0.isMenuBarUtility } // a utility only when picked explicitly
+        let target = appState.recordingTarget(in: processes)
         VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
             Label(appState.t(.recordTargetLabel), systemImage: "app.badge")
                 .foregroundStyle(.secondary)
@@ -579,7 +614,13 @@ struct RecordingControlBar: View {
             } else {
                 Menu {
                     ForEach(processes) { process in
-                        Button(process.displayName) { selectedBundleID = process.bundleID }
+                        Button { appState.selectedRecordingProcessID = process.pid } label: {
+                            if process.pid == target?.pid {
+                                Label(process.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(process.displayName)
+                            }
+                        }
                     }
                 } label: {
                     Text(target?.displayName ?? appState.t(.recordTargetChoose))
@@ -601,7 +642,7 @@ struct RecordingControlBar: View {
             .disabled(target == nil)
 
             if target == nil {
-                Text(appState.t(.noSoundApps))
+                Text(appState.t(appState.selectedRecordingProcessID == nil ? .noSoundApps : .recordTargetUnavailable))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -798,6 +839,10 @@ struct SettingsSheetView: View {
                         Text(message).foregroundStyle(.red).textSelection(.enabled)
                     }
                 }
+                Section {
+                    Link(appState.t(.reportIssue), destination: URL(string: "https://github.com/younnieCutler/ryokuon/issues/new/choose")!)
+                    Text(appState.t(.privacySummary)).font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
 
@@ -834,9 +879,10 @@ struct SessionDetailPane: View {
     @State private var meGain: Double
     @State private var remoteGain: Double
     @State private var lines: [TranscriptLine] = []
-    @State private var displayName: String
     @State private var query = ""
     @State private var showingExport = false
+    @State private var showingRename = false
+    @State private var followsPlayback = true
     /// transcript.txt exists — with `lines` empty this means a run finished
     /// but found no speech (nearly always the wrong language).
     @State private var hasTranscriptFile = false
@@ -846,7 +892,6 @@ struct SessionDetailPane: View {
         self.session = session
         _meGain = State(initialValue: session.gains.me)
         _remoteGain = State(initialValue: session.gains.remote)
-        _displayName = State(initialValue: session.displayName)
     }
 
     private var isPlayingThis: Bool {
@@ -881,11 +926,15 @@ struct SessionDetailPane: View {
                             .id(line.id)
                             .contentShape(Rectangle())
                             .onTapGesture { appState.seekPlayback(session, toSeconds: line.startSeconds) }
+                            .accessibilityAction { appState.seekPlayback(session, toSeconds: line.startSeconds) }
                     }
                     .listStyle(.plain)
                     .searchable(text: $query, prompt: appState.t(.searchPlaceholder))
+                    .overlay {
+                        if filteredLines.isEmpty { ContentUnavailableView.search(text: query) }
+                    }
                     .onChange(of: currentLineID) { _, newValue in
-                        guard let newValue else { return }
+                        guard followsPlayback, query.isEmpty, !appState.isPlaybackPaused, let newValue else { return }
                         withAnimation { proxy.scrollTo(newValue, anchor: .center) }
                     }
                 }
@@ -899,17 +948,16 @@ struct SessionDetailPane: View {
             if oldValue == session.relativePath { loadTranscript() }
         }
         .onChange(of: appState.libraryRevision) { _, _ in loadTranscript() }
-        .onChange(of: session.displayName) { _, newValue in displayName = newValue }
         .onChange(of: session.gains.me) { _, newValue in meGain = newValue }
         .onChange(of: session.gains.remote) { _, newValue in remoteGain = newValue }
-        // Binding form, not `.navigationTitle(displayName)` — that plus a
-        // separate toolbar TextField showed the session name twice in the
-        // toolbar (confirmed by screenshot). The binding gives a native,
-        // inline-editable window title (the same rename affordance Finder/
-        // Notes use), so no extra text field is needed at all.
-        .navigationTitle($displayName)
-        .onChange(of: displayName) { _, newValue in appState.rename(session, to: newValue) }
+        // Rename is explicit: typing a draft must not rewrite metadata on every keystroke.
+        .navigationTitle(session.displayName)
         .toolbar {
+            ToolbarItem {
+                Button { showingRename = true } label: { Image(systemName: "pencil") }
+                    .help(appState.t(.renameButton))
+                    .accessibilityLabel(appState.t(.renameButton))
+            }
             // Exactly one prominent button: the next step. No text yet ->
             // convert; text exists -> export. The other stays plain.
             ToolbarItem {
@@ -927,10 +975,14 @@ struct SessionDetailPane: View {
                 .modifier(ProminentIf(isOn: hasText))
                 .disabled(!appState.canExport(session))
                 .help(appState.t(.exportHelp))
+                .keyboardShortcut("e", modifiers: [.command, .shift])
             }
         }
         .sheet(isPresented: $showingExport) {
             ExportSheet(appState: appState, session: session, utteranceStarts: lines.map(\.startSeconds))
+        }
+        .sheet(isPresented: $showingRename) {
+            RenameSessionSheet(appState: appState, session: session)
         }
     }
 
@@ -945,6 +997,11 @@ struct SessionDetailPane: View {
                     .foregroundStyle(.orange)
             }
             Spacer()
+            if hasText {
+                Toggle(appState.t(.followPlayback), isOn: $followsPlayback)
+                    .toggleStyle(.button)
+                    .font(.caption)
+            }
             // Without text the centered empty state already shows progress.
             if isTranscribingThis, hasText, let progress = appState.transcribeProgress {
                 Text(progress).font(.caption).foregroundStyle(.secondary)
@@ -989,6 +1046,9 @@ struct SessionDetailPane: View {
                     .font(.headline)
                 if isTranscribingThis, let progress = appState.transcribeProgress {
                     Text(progress).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                }
+                if isQueued {
+                    Button(appState.t(.cancelQueued)) { appState.cancelQueuedTranscription(session) }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1041,6 +1101,79 @@ struct SessionDetailPane: View {
     }
 }
 
+private struct FolderDetailPane: View {
+    let appState: AppState
+    let node: AudioLibraryNode
+    @Binding var selection: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RTheme.Spacing.md) {
+            Label(node.name, systemImage: "folder").font(.title2.bold())
+            Text(node.relativePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            List(node.children) { child in
+                Button { selection = child.relativePath } label: {
+                    Label(appState.sessions.first { $0.relativePath == child.relativePath }?.displayName ?? child.name,
+                          systemImage: child.isFolder ? "folder" : "waveform")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.plain)
+            .overlay {
+                if node.children.isEmpty {
+                    ContentUnavailableView(appState.t(.emptyTitle), systemImage: "folder")
+                }
+            }
+            Button(appState.t(.revealInFinder)) {
+                NSWorkspace.shared.activateFileViewerSelecting([
+                    appState.sessionStore.rootDirectory.appendingPathComponent(node.relativePath)
+                ])
+            }
+        }
+        .padding(RTheme.Spacing.lg)
+        .navigationTitle(node.name)
+    }
+}
+
+private struct RenameSessionSheet: View {
+    let appState: AppState
+    let session: Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var saveError: String?
+    @FocusState private var isFocused: Bool
+
+    init(appState: AppState, session: Session) {
+        self.appState = appState
+        self.session = session
+        _name = State(initialValue: session.displayName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RTheme.Spacing.md) {
+            Text(appState.t(.renameButton)).font(.headline)
+            TextField(appState.t(.sessionNamePlaceholder), text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+            if let saveError { Text(saveError).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button(appState.t(.cancelButton)) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(appState.t(.confirmButton)) {
+                    if appState.rename(session, to: name) { dismiss() }
+                    else { saveError = appState.lastError }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(RTheme.Spacing.xl)
+        .frame(minWidth: 320, idealWidth: 400)
+        .onAppear { isFocused = true }
+    }
+}
+
 /// Files that are not a Ryokuon session stay where Finder put them. Playback
 /// reads the original bytes; importing into a transcribable session is explicit.
 private struct ExternalAudioDetailPane: View {
@@ -1052,6 +1185,7 @@ private struct ExternalAudioDetailPane: View {
     @State private var scrubTime = 0.0
 
     private var isPlaying: Bool { appState.playingAudioPath == node.relativePath }
+    private var isRunning: Bool { isPlaying && !appState.isPlaybackPaused }
     private var displayedTime: Double { isScrubbing ? scrubTime : (isPlaying ? appState.playbackTime : 0) }
 
     var body: some View {
@@ -1068,11 +1202,10 @@ private struct ExternalAudioDetailPane: View {
             } else if let duration {
                 HStack(spacing: RTheme.Spacing.sm) {
                     Button {
-                        if isPlaying { appState.stopPlayback() }
-                        else { appState.playExternalAudio(at: node.relativePath) }
+                        appState.toggleExternalPlayback(at: node.relativePath)
                     } label: {
-                        Label(isPlaying ? appState.t(.sessionStop) : appState.t(.sessionPlay),
-                              systemImage: isPlaying ? "stop.fill" : "play.fill")
+                        Label(appState.t(isRunning ? .sessionPause : .sessionPlay),
+                              systemImage: isRunning ? "pause.fill" : "play.fill")
                     }
                     Text(formattedDuration(displayedTime)).font(.caption.monospacedDigit())
                     Slider(value: Binding(
@@ -1081,8 +1214,7 @@ private struct ExternalAudioDetailPane: View {
                     ), in: 0 ... max(duration, 0.01), onEditingChanged: { editing in
                         isScrubbing = editing
                         if !editing, duration > 0.05 {
-                            appState.playExternalAudio(at: node.relativePath,
-                                                       from: min(scrubTime, duration - 0.05))
+                            appState.seekExternalPlayback(at: node.relativePath, toSeconds: scrubTime, duration: duration)
                         }
                     })
                     Text(formattedDuration(duration)).font(.caption.monospacedDigit())
@@ -1096,6 +1228,7 @@ private struct ExternalAudioDetailPane: View {
             } label: {
                 Label(appState.t(.libraryImportForTranscription), systemImage: "square.and.arrow.down")
             }
+            .disabled(appState.importingFileName != nil)
             Spacer(minLength: 0)
         }
         .padding(RTheme.Spacing.lg)
@@ -1181,6 +1314,7 @@ private struct CompactPlayerBar: View {
         appState.playingAudioPath?.hasPrefix(session.relativePath + "/") == true
     }
     private var duration: Double { max(session.durationSeconds, 0.01) }
+    private var isRunning: Bool { isPlayingThis && !appState.isPlaybackPaused }
 
     /// `appState.playbackTime` is shared across whichever session is
     /// actually playing — reading it directly here for a session that
@@ -1197,12 +1331,29 @@ private struct CompactPlayerBar: View {
         VStack(spacing: RTheme.Spacing.xs) {
             HStack(spacing: RTheme.Spacing.sm) {
                 Button {
-                    if isPlayingThis { appState.stopPlayback() } else { appState.play(session) }
+                    appState.togglePlayback(session)
                 } label: {
-                    Image(systemName: isPlayingThis ? "stop.fill" : "play.fill")
+                    Image(systemName: isRunning ? "pause.fill" : "play.fill")
                 }
                 .controlSize(.regular)
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(session.state == .recording)
+                .accessibilityLabel(appState.t(isRunning ? .sessionPause : .sessionPlay))
+                .help(appState.t(isRunning ? .sessionPause : .sessionPlay))
+
+                Button { appState.seekPlayback(session, toSeconds: displayTime - 10) } label: {
+                    Image(systemName: "gobackward.10")
+                }
+                .disabled(session.state == .recording)
+                .accessibilityLabel(appState.t(.skipBackward))
+                .help(appState.t(.skipBackward))
+
+                Button { appState.seekPlayback(session, toSeconds: displayTime + 10) } label: {
+                    Image(systemName: "goforward.10")
+                }
+                .disabled(session.state == .recording)
+                .accessibilityLabel(appState.t(.skipForward))
+                .help(appState.t(.skipForward))
 
                 Text(formattedDuration(displayTime)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Slider(value: Binding(
@@ -1212,6 +1363,8 @@ private struct CompactPlayerBar: View {
                     isScrubbing = editing
                     if !editing { appState.seekPlayback(session, toSeconds: scrubTime) }
                 })
+                .disabled(session.state == .recording)
+                .accessibilityLabel(appState.t(.playbackPosition))
                 Text(formattedDuration(duration)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
 
@@ -1279,6 +1432,8 @@ struct ExportSheet: View {
     @State private var isExporting = false
     @State private var isPreviewing = false
     @State private var exportError: String?
+    @State private var outputDirectory: URL
+    @State private var showingOverwrite = false
 
     init(appState: AppState, session: Session, utteranceStarts: [Double], peaks: [Float]? = nil) {
         self.appState = appState
@@ -1288,6 +1443,7 @@ struct ExportSheet: View {
         _exportMP3 = State(initialValue: MP3Exporter.lameURL != nil)
         _exportMD = State(initialValue: !utteranceStarts.isEmpty)
         _peaks = State(initialValue: peaks)
+        _outputDirectory = State(initialValue: appState.sessionStore.directory(for: session))
     }
 
     private var hasTranscript: Bool { !utteranceStarts.isEmpty }
@@ -1325,6 +1481,12 @@ struct ExportSheet: View {
 
                     rangeEditor
 
+                    VStack(alignment: .leading, spacing: RTheme.Spacing.xs) {
+                        Text(appState.t(.exportFolder)).font(.caption).foregroundStyle(.secondary)
+                        Text(outputDirectory.path).font(.caption).lineLimit(2).textSelection(.enabled)
+                        Button(appState.t(.chooseExportFolder)) { chooseOutputDirectory() }
+                    }
+
                     if exportMP3 {
                         ViewThatFits(in: .horizontal) {
                             HStack { qualityControls }
@@ -1345,6 +1507,7 @@ struct ExportSheet: View {
                 }
                 .padding(RTheme.Spacing.xl)
             }
+            .disabled(isExporting)
             Divider()
             HStack {
                 if isExporting { ProgressView().controlSize(.small) }
@@ -1352,7 +1515,7 @@ struct ExportSheet: View {
                 Button(appState.t(.cancelButton)) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(isExporting)
-                Button(runTitle) { runExport() }
+                Button(runTitle) { requestExport() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(isExporting || end - start < 0.5 || !(exportMP3 || exportMD))
@@ -1362,6 +1525,12 @@ struct ExportSheet: View {
         .frame(minWidth: 360, idealWidth: 500, maxWidth: 720,
                minHeight: 360, idealHeight: 540, maxHeight: 760)
         .interactiveDismissDisabled(isExporting)
+        .confirmationDialog(appState.t(.overwriteTitle), isPresented: $showingOverwrite, titleVisibility: .visible) {
+            Button(appState.t(.overwriteConfirm), role: .destructive) { runExport(allowOverwrite: true) }
+            Button(appState.t(.cancelButton), role: .cancel) {}
+        } message: {
+            Text(appState.t(.overwriteMessage))
+        }
         .animation(.easeOut(duration: 0.15), value: exportMP3)
         .task {
             guard peaks == nil, let url = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session))
@@ -1371,6 +1540,9 @@ struct ExportSheet: View {
         // Preview stops itself at the range end instead of playing on.
         .onChange(of: appState.playbackTime) { _, time in
             if isPreviewing && time >= end { stopPreview() }
+        }
+        .onChange(of: appState.isPlaybackPaused) { _, paused in
+            if paused { isPreviewing = false }
         }
         .onDisappear { if isPreviewing { stopPreview() } }
     }
@@ -1417,6 +1589,30 @@ struct ExportSheet: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            HStack(spacing: RTheme.Spacing.md) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appState.t(.rangeStart)).font(.caption).foregroundStyle(.secondary)
+                    TextField(appState.t(.rangeStart), value: Binding(
+                        get: { start },
+                        set: { value in
+                            guard value.isFinite else { return }
+                            start = min(max(value, 0), max(0, end - 0.5))
+                        }
+                    ), format: .number.precision(.fractionLength(0...2)))
+                    .textFieldStyle(.roundedBorder)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appState.t(.rangeEnd)).font(.caption).foregroundStyle(.secondary)
+                    TextField(appState.t(.rangeEnd), value: Binding(
+                        get: { end },
+                        set: { value in
+                            guard value.isFinite else { return }
+                            end = min(max(value, start + 0.5), session.durationSeconds)
+                        }
+                    ), format: .number.precision(.fractionLength(0...2)))
+                    .textFieldStyle(.roundedBorder)
+                }
+            }
             HStack {
                 Spacer(minLength: 0)
                 Button(appState.t(.exportAll)) {
@@ -1430,6 +1626,7 @@ struct ExportSheet: View {
                     Label(isPreviewing ? appState.t(.sessionStop) : appState.t(.exportPreview),
                           systemImage: isPreviewing ? "stop.fill" : "play.fill")
                 }
+                .disabled(end - start < 0.5)
             }
             .controlSize(.small)
         }
@@ -1437,7 +1634,8 @@ struct ExportSheet: View {
 
     private func startPreview() {
         appState.play(session, from: start)
-        isPreviewing = true
+        isPreviewing = appState.playingAudioPath?.hasPrefix(session.relativePath + "/") == true
+            && !appState.isPlaybackPaused
     }
 
     private func stopPreview() {
@@ -1445,14 +1643,32 @@ struct ExportSheet: View {
         isPreviewing = false
     }
 
-    private func runExport() {
+    private func chooseOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = outputDirectory
+        if panel.runModal() == .OK, let url = panel.url { outputDirectory = url }
+    }
+
+    private func requestExport() {
+        guard let plan = try? SessionExportPlan(session: session, range: start ... end, directory: outputDirectory,
+                                               mp3: exportMP3, markdown: exportMD) else { return }
+        if plan.existingURLs.isEmpty { runExport() }
+        else { showingOverwrite = true }
+    }
+
+    private func runExport(allowOverwrite: Bool = false) {
         isExporting = true
         exportError = nil
         if isPreviewing { stopPreview() }
         Task {
             let succeeded = await appState.export(session, range: start ... end, bitrate: bitrate,
                                   mono: bitrate < 128 || session.channels == 1,
-                                  mp3: exportMP3, markdown: exportMD)
+                                  mp3: exportMP3, markdown: exportMD,
+                                  destination: outputDirectory, allowOverwrite: allowOverwrite)
             isExporting = false
             if succeeded { dismiss() } else { exportError = appState.lastError }
         }
@@ -1514,7 +1730,7 @@ struct WaveformRangeView: View {
 
     private enum DragTarget { case start, end, new(anchor: Double) }
     @State private var dragTarget: DragTarget?
-    private let handleHitWidth: CGFloat = 12
+    private let handleHitWidth: CGFloat = 22
 
     var body: some View {
         GeometryReader { geometry in
@@ -1551,6 +1767,7 @@ struct WaveformRangeView: View {
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                guard width > 0, duration > 0 else { return }
                 let time = min(max(Double(value.location.x / width) * duration, 0), duration)
                 if dragTarget == nil {
                     let startX = value.startLocation.x
@@ -1559,8 +1776,8 @@ struct WaveformRangeView: View {
                     else { dragTarget = .new(anchor: Double(startX / width) * duration) }
                 }
                 switch dragTarget {
-                case .start: start = min(time, end)
-                case .end: end = max(time, start)
+                case .start: start = min(time, max(0, end - 0.5))
+                case .end: end = min(duration, max(time, start + 0.5))
                 case .new(let anchor):
                     start = min(anchor, time)
                     end = max(anchor, time)
