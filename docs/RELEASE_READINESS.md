@@ -2,7 +2,19 @@
 
 ## Status of this change
 
-Implementation was authored on Linux. On macOS 26.6.2 / Xcode 26.2 (Swift 6.2.3), commit `2b37e78` passed a warnings-as-errors debug build, all 73 tests in 21 suites, and a release build: [CI evidence](https://github.com/younnieCutler/ryokuon/actions/runs/37953800502). Thread Sanitizer exited with signal 11 before tests, so that run failed; no sanitizer pass is claimed. CI now retries on the current Xcode 26.6 toolchain with isolated build output and retained diagnostics. GUI behavior, audio listening, speech-model execution and notarized distribution remain unverified. Do not treat the v0.1.3 artifact or older PR #1 report as validation of this branch.
+Implementation was authored on Linux. Code commit `80f900d39c41e9be8f625b2d20b4461263618dad` passed [macOS CI](https://github.com/younnieCutler/ryokuon/actions/runs/37954196120) on macOS 26.6.2:
+
+| Check | Result | Toolchain |
+| --- | --- | --- |
+| Debug build, warnings treated as errors | Passed | Xcode 26.2 |
+| 73 tests in 21 suites | Passed | Xcode 26.2 |
+| Release build | Passed | Xcode 26.2 |
+| Full Thread Sanitizer run, 73 tests | Passed | Xcode 26.6, isolated build directory |
+| Shell syntax and whitespace checks | Passed | macOS runner |
+
+The earlier Xcode 26.2 sanitizer execution exited with signal 11 before tests ([failed run](https://github.com/younnieCutler/ryokuon/actions/runs/37953800502)); changing the sanitizer toolchain and isolating build output resolved execution. The exact cause of that startup failure is not established. No custom sanitizer suppression or failure bypass was added.
+
+GUI behavior, audio listening, speech-model execution and notarized distribution remain unverified. Do not treat the v0.1.3 artifact or older PR #1 report as validation of this branch. Documentation-only commits after the validated code do not change the tested implementation.
 
 ## Implemented
 
