@@ -1,0 +1,15 @@
+name: Feature request
+description: Describe the workflow you want to improve.
+title: "[Feature] "
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe your current workflow and where Ryokuon gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: What would a successful improvement look like?

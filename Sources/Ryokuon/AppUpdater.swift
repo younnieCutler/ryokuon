@@ -72,12 +72,18 @@ struct GitHubRelease: Decodable, Sendable {
     var installAsset: Asset? {
         assets.first {
             $0.name == "Ryokuon.zip" && $0.size > 0 && $0.size < 200_000_000
-                && $0.digest?.hasPrefix("sha256:") == true
+                && Self.validDigest($0.digest)
                 && $0.browserDownloadURL.scheme == "https"
                 && $0.browserDownloadURL.host == "github.com"
                 && $0.browserDownloadURL.path.hasPrefix(
                     "/younnieCutler/ryokuon/releases/download/\(tagName)/")
         }
+    }
+
+    private static func validDigest(_ digest: String?) -> Bool {
+        guard let digest, digest.hasPrefix("sha256:") else { return false }
+        let hex = digest.dropFirst(7)
+        return hex.count == 64 && hex.allSatisfy { "0123456789abcdefABCDEF".contains($0) }
     }
 }
 
@@ -128,7 +134,7 @@ final class AppUpdater {
     }
 
     func install(appState: AppState) async {
-        guard appState.canChangeStorageFolder else {
+        guard !appState.hasActiveWork else {
             state = .failed(UpdateError.busy.localizedDescription)
             return
         }
@@ -152,7 +158,7 @@ final class AppUpdater {
             let prepared = try await Task.detached(priority: .utility) {
                 try Self.prepare(archive: archive, in: work, release: release, team: currentTeam)
             }.value
-            guard appState.canChangeStorageFolder else { throw UpdateError.busy }
+            guard !appState.hasActiveWork else { throw UpdateError.busy }
             let bundledHelper = Bundle.main.resourceURL?.appendingPathComponent("update-helper.sh")
             guard let bundledHelper else { throw UpdateError.invalidSignature }
             let helper = work.appendingPathComponent("update-helper.sh")
@@ -198,6 +204,7 @@ final class AppUpdater {
               bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == release.version,
               try teamIdentifier(of: app) == team else { throw UpdateError.invalidSignature }
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+        try run("/usr/sbin/spctl", ["--assess", "--type", "execute", app.path])
         return app
     }
 

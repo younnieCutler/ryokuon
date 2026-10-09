@@ -1,89 +1,88 @@
 # Ryokuon
 
-通話を自分の声と相手の声に分けて録音し、文字起こしまで Mac の中で済ませる macOS アプリです。音声も文字起こしの結果も、外部のサーバーには送りません。
+A native macOS meeting recorder with on-device transcription. Record a call, review the transcript, and export audio or Markdown without uploading your conversations to a transcription service.
 
-## できること
+[日本語](README.ja.md) · [Releases](https://github.com/younnieCutler/ryokuon/releases) · [Report a problem](https://github.com/younnieCutler/ryokuon/issues/new/choose) · [Contributing](CONTRIBUTING.md)
 
-### 双方向録音
+**Pre-1.0.** This branch hardens interaction, long-recording handling, data protection and distribution. It is not a claim of completed hardware or GUI validation. The existing v0.1.3 binary predates these changes; see the [release gates](docs/RELEASE_READINESS.md).
 
-マイクの音（自分）と、選んだアプリの音（相手）を同時に録ります。相手側は Zoom でも Chrome でも、音を出しているアプリなら選べます。保存先は 1 つのステレオファイルで、左チャンネルが自分、右チャンネルが相手です。
+## What it does
 
-Mac の内蔵マイクで録音した場合だけはモノラルになります。スピーカーの音がマイクに回り込むので、左右に分けても結局どちらにも両方の声が入ってしまうからです。
+- Capture your microphone and one explicitly selected app. Headset recordings separate you and the remote side into left/right channels; built-in microphone recordings are mono to account for speaker bleed.
+- Transcribe Japanese, Korean and English using Apple's `SpeechAnalyzer`. Automatic language selection is heuristic; override it when needed.
+- Browse real folders, open a recording in one click, search renamed sessions, pause and resume, and jump back or forward ten seconds.
+- Click transcript lines to seek. Turn off playback-following while reading; searching does not pull you back to the playhead.
+- Import M4A, MP3, WAV or FLAC. Choose an export folder, set precise range boundaries, and explicitly confirm replacing existing files.
+- Move recordings to Finder's Trash, with confirmation. Active recording/processing prevents app termination, removal and storage changes.
 
-### 文字起こし
+Audio input for playback and full transcription is read in bounded chunks. Transcript words still accumulate in memory; unusually long sessions need the profiling in the release checklist.
 
-Apple のオンデバイス音声認識（`SpeechAnalyzer`）を使います。日本語、韓国語、英語は自動で判定するので、録音のたびに言語を選ぶ必要はありません。まれに判定が外れたら、「再文字起こし ▾」で言語を指定してやり直せます。
+## Requirements
 
-結果は `開始ミリ秒|話者|テキスト` の 1 行 1 発話で保存します。そのまま AI に読ませやすい形です。
+Apple silicon, macOS 26 or later. Source builds require Swift 6.2 or newer and a macOS 26 SDK. The UI supports Japanese, Korean and English.
 
-### 音声ファイルの読み込み
+Microphone, app-audio capture and folder permissions are needed to record. You can defer recording permissions and import an existing file instead. Initial speech-model downloads require internet access.
 
-iPhone のボイスメモなど、m4a・mp3・wav ファイルをサイドバーにドラッグすると、録音したものと同じように文字起こしが始まります。
+## Install
 
-### 書き出し
-
-波形の上をドラッグして範囲を決め、MP3、分析用の Markdown、またはその両方を書き出せます。Markdown にはタイムスタンプが付きます。
-
-文字起こしの行をクリックすればその位置から再生でき、キーワード検索もできます。
-
-## 動作環境
-
-Apple シリコン搭載の Mac で、macOS 26 以降が必要です。
-
-## インストール
-
-ターミナルで次のコマンドを実行します。
+Use a **signed, notarized release** when one is available. The public installer validates the app signature, bundle identity and Gatekeeper assessment; it refuses to replace a running app. The currently published v0.1.3 artifact is not evidence that these release requirements are met. Until the next notarized release, use a source build.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash
 ```
 
-最新版が `/Applications` に入り、そのまま起動します。Homebrew などを別に入れる必要はありません。MP3 エンコーダーの `lame` はアプリに同梱しています。
+Updates can be checked from Settings. Downloaded updates require the expected SHA-256, app identity, version, signing team and Gatekeeper assessment. Close the app before running the command-line installer or uninstaller.
 
-ブラウザでダウンロードしたアプリと違って、`curl` で入れた場合は「開発元を確認できません」という警告が出ません。
+## Everyday use
 
-アップデートも同じコマンドです。録音中に実行した場合、インストーラーは何もせずに終了します（録音が途切れないようにするためです）。録音を終えてから実行してください。
+1. Play audio in the call app, select that app in Ryokuon, and press Record. Selecting a target does not itself start capture. If an explicitly selected process disappears, Ryokuon does not silently record another app.
+2. Stop recording to queue transcription. A queued transcription can be cancelled; an active transcription must finish before quitting.
+3. Select the recording folder directly to read the transcript. Play/Pause preserves position. Adjusting stereo gains changes playback and subsequent exports/transcription, without altering the original audio.
+4. Export a full recording or range. Outputs go to the chosen folder; existing names require confirmation. MP3 and Markdown are individually protected writes, not a single multi-file transaction.
 
-アンインストールはこちらです。
+| Shortcut | Action |
+| --- | --- |
+| Command-O | Import audio |
+| Command-comma | Settings |
+| Command-1 | Open the library window |
+| Command-Shift-R | Start/stop the selected recording target |
+| Command-R | Refresh the library |
+| Command-Return | Play/pause the selected session |
+| Command-Shift-E | Open session export |
+
+Playback/export shortcuts apply when their controls are available. Recording requires the relevant permissions.
+
+## Your data
+
+The default root is `~/Documents/ryokuon`. Settings can change it. Organize recording folders beneath the selected root in Finder; Ryokuon reads nested folders and detects changes.
+
+| File | Purpose |
+| --- | --- |
+| `call.wav` / `call.flac` | Recording; successful conversion verifies FLAC before removing WAV |
+| `transcript.txt` | Timestamped utterances, with M/R/U speaker tags |
+| `raw.json` | Recognized words and confidence values |
+| `session.json` | Display name, language, duration and gains |
+
+Audio and transcripts are processed locally. Apple model downloads and GitHub update checks use the network. There is no analytics SDK in this repository. Sharing exports, issue attachments or a synced storage folder is your explicit choice. See [privacy and security](SECURITY.md).
+
+## Build and validate
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash -s -- --uninstall
-```
-
-アプリ本体、設定、プライバシー権限を削除します。録音データ（`~/Documents/ryokuon`）は残るので、不要なら自分で消してください。
-
-## 使い方
-
-1. 初回起動時に、マイク、システムオーディオ録音、保存フォルダへのアクセスを順番に許可します。
-2. 録音したいアプリで音を鳴らすと、サイドバー下の「録音するアプリ」に出てきます。アプリ名を確かめて「録音開始」を押します。
-3. 録音を止めると文字起こしが自動で始まります。最初の 1 回は Apple の音声認識モデルをダウンロードするので、少し待ちます。
-4. 書き出すときは録音を選んで、右上の「書き出す」を押します。ファイルは録音フォルダに保存され、Finder が開きます。
-
-## 保存場所
-
-録音ごとに `~/Documents/ryokuon/<日時>/` というフォルダができます。保存先は設定で変えられます。Finderでこの保存先の下にプロジェクト用フォルダを作り、録音フォルダを移動して整理しても構いません。Ryokuonは下位フォルダまで自動で読み直します。
-
-| ファイル | 中身 |
-|---|---|
-| `call.wav` → `call.flac` | 音声。文字起こしが終わると FLAC に変換され、容量がおよそ半分になります |
-| `transcript.txt` | 1 行 1 発話の文字起こし。話者は M が自分、R が相手、U がモノラル |
-| `raw.json` | 単語ごとの認識結果と信頼度 |
-| `session.json` | 名前、言語、長さなど |
-
-ターミナルで文字起こしを探したいときは `bin/ryokuon` が使えます（`list`、`show`、`search`、`range`）。`list` に出る保存先からの相対パスを、ほかのコマンドに渡します。
-
-## ソースからビルド
-
-```bash
-export RYOKUON_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)"
-# 自分の署名 ID は: security find-identity -v -p codesigning
-brew install lame          # ビルド時にアプリへ同梱される
+brew install lame
+swift build
+swift test
+swift test --sanitize=thread
+export RYOKUON_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
 bash Scripts/bundle.sh
 open .build/Ryokuon.app
 ```
 
-テストは `swift test` で動きます。リリースを公開するときは `bash Scripts/make_release.sh --publish` を実行すると、`Ryokuon.zip` が `v<バージョン>` として GitHub にアップロードされます。
+Use a temporary storage root for E2E, never real meeting recordings. The [validation guide](CONTRIBUTING.md) describes the defaults override and safe restoration. CI uses macOS 26 and retains build/test logs; a CI pass cannot validate real call capture, TCC dialogs, accessibility or notarized update installation.
 
-## 作者
+CLI helpers are in `bin/ryokuon` (`list`, `show`, `search`, `range`). Use relative paths printed by `list`, including parent folders.
 
-Jeongyun Kim（ehrktm090@gmail.com）
+## Public release
+
+Publishing requires a Developer ID Application certificate and a `notarytool` keychain profile. The release script submits for notarization, staples the app, validates it and only then publishes. Credentials are never committed. See [release readiness](docs/RELEASE_READINESS.md).
+
+No release is approved merely because source changes are merged. Licensing, hardware tests, GUI evidence and signed distribution remain explicit release gates.

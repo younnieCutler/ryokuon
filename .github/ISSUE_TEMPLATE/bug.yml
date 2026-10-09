@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible problem without uploading private recordings.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Please do not upload meeting recordings, transcripts, names or credentials. A synthetic sample is sufficient."
+  - type: input
+    id: version
+    attributes:
+      label: Ryokuon version
+      placeholder: "Settings → App updates"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version and hardware
+      placeholder: "macOS 26.x, Apple silicon, built-in or USB microphone"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the expected result and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Error message or redacted screenshot
+      description: Remove private content before sharing.

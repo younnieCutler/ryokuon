@@ -13,7 +13,7 @@ struct AppUpdaterTests {
     @Test func releaseMustContainAnExpectedZipWithDigest() throws {
         let json = """
         {"tag_name":"v0.1.3","assets":[
-          {"name":"Ryokuon.zip","size":1200000,"digest":"sha256:abcdef",
+          {"name":"Ryokuon.zip","size":1200000,"digest":"sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
            "browser_download_url":"https://github.com/younnieCutler/ryokuon/releases/download/v0.1.3/Ryokuon.zip"}
         ]}
         """
@@ -22,5 +22,7 @@ struct AppUpdaterTests {
         #expect(release.installAsset != nil)
         let wrong = json.replacingOccurrences(of: "github.com", with: "example.com")
         #expect(try JSONDecoder().decode(GitHubRelease.self, from: Data(wrong.utf8)).installAsset == nil)
+        let truncated = json.replacingOccurrences(of: "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd", with: "abcdef")
+        #expect(try JSONDecoder().decode(GitHubRelease.self, from: Data(truncated.utf8)).installAsset == nil)
     }
 }

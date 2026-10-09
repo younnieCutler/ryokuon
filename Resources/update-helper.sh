@@ -39,6 +39,7 @@ backup="$parent/.Ryokuon-backup-$pid.app"
 verify_app() {
   local app="$1"
   /usr/bin/codesign --verify --deep --strict "$app"
+  /usr/sbin/spctl --assess --type execute "$app"
   local actual_team
   actual_team="$(/usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | /usr/bin/awk -F= '$1 == "TeamIdentifier" { print $2 }')"
   [[ "$actual_team" == "$team" ]]

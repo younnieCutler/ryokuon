@@ -1,0 +1,44 @@
+name: macOS validation
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select the supported toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+          swift --version
+          sw_vers
+      - name: Install the MP3 test dependency
+        run: brew install lame
+      - name: Validate scripts and whitespace
+        run: |
+          git diff --check
+          bash -n install.sh Scripts/bundle.sh Scripts/make_release.sh Resources/update-helper.sh
+      - name: Build and test
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p .build/validation
+          swift build -Xswiftc -warnings-as-errors 2>&1 | tee .build/validation/build.log
+          swift test 2>&1 | tee .build/validation/tests.log
+          swift test --sanitize=thread 2>&1 | tee .build/validation/thread-sanitizer.log
+          swift build -c release 2>&1 | tee .build/validation/release-build.log
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-validation-${{ github.sha }}
+          path: .build/validation/*.log
+          if-no-files-found: ignore
+          retention-days: 14

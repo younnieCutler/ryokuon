@@ -3,9 +3,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash -s -- --uninstall
 #
-# Why a script instead of a DMG: Gatekeeper only vets files carrying the
-# com.apple.quarantine flag, which browsers add and curl doesn't — so a
-# curl-installed app opens without notarization prompts.
+# Public installs require a signed, notarized app. Never bypass Gatekeeper.
 set -euo pipefail
 
 APP_NAME="Ryokuon"
@@ -15,24 +13,15 @@ URL="${RYOKUON_URL:-https://github.com/younnieCutler/ryokuon/releases/latest/dow
 say() { printf '\033[1m==>\033[0m %s\n' "$1"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
-# Quitting mid-recording would cut the recording short — refuse instead.
-ensure_not_recording() {
-    pgrep -x "$APP_NAME" >/dev/null || return 0
-    local root
-    root="$(defaults read "$BUNDLE_ID" dev.ryokuon.storageRootPath 2>/dev/null || echo "$HOME/Documents/ryokuon")"
-    while IFS= read -r -d '' session; do
-        if grep -q '"state" : "recording"' "$session"; then
-            die "$APP_NAME is recording right now — stop the recording, then run this again."
-        fi
-    done < <(find "$root" -type f -name session.json -print0 2>/dev/null)
-    say "Quitting the running $APP_NAME"
-    pkill -TERM -x "$APP_NAME" || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x "$APP_NAME" >/dev/null || return 0; sleep 0.5; done
-    die "$APP_NAME didn't quit — quit it manually and run this again."
+# Do not send SIGTERM: it bypasses the app's recording/processing quit guard.
+ensure_not_running() {
+    if pgrep -x "$APP_NAME" >/dev/null; then
+        die "Finish recording or processing, then quit $APP_NAME before installing or uninstalling."
+    fi
 }
 
 uninstall() {
-    ensure_not_recording
+    ensure_not_running
     for dir in /Applications "$HOME/Applications"; do
         if [ -d "$dir/$APP_NAME.app" ]; then
             say "Removing $dir/$APP_NAME.app"
@@ -62,12 +51,27 @@ install() {
     ditto -x -k "$tmp/$APP_NAME.zip" "$tmp"
     [ -d "$tmp/$APP_NAME.app" ] || die "the download didn't contain $APP_NAME.app"
     codesign --verify --deep --strict "$tmp/$APP_NAME.app" 2>/dev/null || die "signature check failed — download corrupted?"
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$tmp/$APP_NAME.app/Contents/Info.plist")" = "$BUNDLE_ID" ] || die "unexpected app identity"
+    spctl --assess --type execute "$tmp/$APP_NAME.app" || die "Gatekeeper did not approve this release. Use a signed, notarized public release."
 
-    ensure_not_recording
+    ensure_not_running
     say "Installing to $dest/$APP_NAME.app"
-    rm -rf "${dest:?}/$APP_NAME.app"
-    ditto "$tmp/$APP_NAME.app" "$dest/$APP_NAME.app"
-    xattr -dr com.apple.quarantine "$dest/$APP_NAME.app" 2>/dev/null || true
+    local incoming="$dest/.$APP_NAME-incoming-$$.app"
+    local backup="$dest/.$APP_NAME-previous-$$.app"
+    [ ! -e "$incoming" ] && [ ! -e "$backup" ] || die "an installer staging path already exists"
+    ditto "$tmp/$APP_NAME.app" "$incoming"
+    codesign --verify --deep --strict "$incoming" || { rm -rf "$incoming"; die "staged app verification failed"; }
+    if [ -d "$dest/$APP_NAME.app" ]; then mv "$dest/$APP_NAME.app" "$backup"; fi
+    if ! mv "$incoming" "$dest/$APP_NAME.app"; then
+        [ ! -d "$backup" ] || mv "$backup" "$dest/$APP_NAME.app"
+        die "installation failed; the previous app was restored"
+    fi
+    # The previous installation stays recoverable rather than being deleted first.
+    if [ -d "$backup" ]; then
+        local previous_dir
+        previous_dir="$(mktemp -d "$HOME/.Trash/Ryokuon-previous.XXXXXX")"
+        mv "$backup" "$previous_dir/Ryokuon.app"
+    fi
 
     say "Opening $APP_NAME — allow the microphone and audio permissions it asks for."
     open "$dest/$APP_NAME.app"
