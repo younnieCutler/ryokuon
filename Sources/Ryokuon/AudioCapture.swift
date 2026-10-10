@@ -66,7 +66,7 @@ final class AudioCapture {
     var diagnostics: String {
         "mic=\(device.micChannels)ch tap=\(device.tapChannels)ch rate=\(device.sampleRate)Hz"
     }
-    var framesWritten: Int { writer.framesWritten }
+    var framesWritten: Int { drainQueue.sync { writer.framesWritten } }
     static let fileName = "call.wav"
     static let flacFileName = "call.flac"
 
@@ -217,6 +217,7 @@ final class AudioCapture {
     }
 
     private func drainAndWrite() {
+        guard writeError == nil else { return }
         var meSamples: [Float] = []
         var remoteSamples: [Float] = []
         micRing.drain(into: &meSamples)

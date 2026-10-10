@@ -14,6 +14,16 @@ struct Session: Codable, Sendable {
         case recovered
     }
 
+    enum TranscriptionState: String, Codable, Sendable {
+        case notStarted, queued, transcribing, completed, failed
+    }
+
+    struct Bookmark: Codable, Identifiable, Sendable {
+        let id: UUID
+        let seconds: Double
+        var title: String
+    }
+
     struct Gains: Codable, Sendable {
         var me: Double = 1.0
         var remote: Double = 1.0
@@ -37,6 +47,10 @@ struct Session: Codable, Sendable {
     /// pre-existing session.json files without this key still load — they
     /// were all recorded stereo, so 2 is the correct default for them.
     var channels: Int = 2
+    var notes: String = ""
+    var bookmarks: [Bookmark] = []
+    var transcriptionState: TranscriptionState = .notStarted
+    var transcriptionError: String?
 
     init(id: String, displayName: String, language: String, targetBundleID: String?,
          targetDisplayName: String, createdAt: Date, state: State, durationSeconds: Double,
@@ -67,11 +81,15 @@ struct Session: Codable, Sendable {
         durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
         gains = try container.decode(Gains.self, forKey: .gains)
         channels = try container.decodeIfPresent(Int.self, forKey: .channels) ?? 2
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        bookmarks = try container.decodeIfPresent([Bookmark].self, forKey: .bookmarks) ?? []
+        transcriptionState = try container.decodeIfPresent(TranscriptionState.self, forKey: .transcriptionState) ?? .notStarted
+        transcriptionError = try container.decodeIfPresent(String.self, forKey: .transcriptionError)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, displayName, language, targetBundleID, targetDisplayName
-        case createdAt, state, durationSeconds, gains, channels
+        case createdAt, state, durationSeconds, gains, channels, notes, bookmarks, transcriptionState, transcriptionError
     }
 }
 
@@ -203,7 +221,10 @@ final class SessionStore {
               session.id != ".", session.id != "..", !session.id.contains("/"),
               (1 ... 2).contains(session.channels),
               session.durationSeconds.isFinite, session.durationSeconds >= 0,
-              session.gains.me.isFinite, session.gains.remote.isFinite
+              session.gains.me.isFinite, session.gains.remote.isFinite,
+              (0...4).contains(session.gains.me), (0...4).contains(session.gains.remote),
+              session.bookmarks.allSatisfy({ $0.seconds.isFinite && $0.seconds >= 0 }),
+              Set(session.bookmarks.map(\.id)).count == session.bookmarks.count
         else { throw SessionError.invalidMetadata(url) }
         session.relativePath = String(directory.standardizedFileURL.path.dropFirst(rootDirectory.standardizedFileURL.path.count + 1))
         return session
@@ -233,8 +254,11 @@ final class SessionStore {
 
             let callURL = directory.appendingPathComponent(AudioCapture.fileName)
             do {
+                let size = try FileManager.default.attributesOfItem(atPath: callURL.path)[.size] as? UInt64 ?? 0
+                guard size > 44 else { continue }
                 try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
                 session.state = .recovered
+                session.transcriptionState = .notStarted
                 session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
                 try save(session, in: directory)
                 recovered.append(session)
