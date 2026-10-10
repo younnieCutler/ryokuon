@@ -53,7 +53,7 @@ enum L10nKey {
     case errorMicSwitchFailed // %@ = error description
     case errorOperationBusy, errorMetadataSaveFailed, errorDeleteFailed
     case errorNoAudioFile
-    case progressStarting, progressConvertingFLAC, cancelTranscription, progressCancelling
+    case damagedSessionHint, cancelImport, pendingImports, progressStarting, progressConvertingFLAC, cancelTranscription, progressCancelling
     case progressMeTrack, progressRemoteTrack, progressDownloadingModel // model: %@ = "42%"
     case statusReady, statusRecording, statusProcessing
     case currentMicLabel, currentAppLabel
@@ -117,6 +117,9 @@ enum Localization {
             .cancelQueued: "대기 취소",
             .cancelTranscription: "전사 취소",
             .progressCancelling: "취소 중…",
+            .cancelImport: "가져오기 취소",
+            .damagedSessionHint: "세션 정보를 읽을 수 없습니다. 오디오 파일을 선택하면 재생하거나 새 세션으로 가져올 수 있습니다. 기존 파일은 유지됩니다.",
+            .pendingImports: "대기 중 %d개",
             .reportIssue: "문제 보고·기능 제안",
             .privacySummary: "음성과 전사는 이 Mac에 저장됩니다. 음성 모델 다운로드와 업데이트 확인에는 네트워크를 사용합니다.",
             .quitBusyTitle: "진행 중인 작업이 있습니다",
@@ -273,6 +276,9 @@ enum Localization {
             .cancelQueued: "待機をキャンセル",
             .cancelTranscription: "文字起こしをキャンセル",
             .progressCancelling: "キャンセル中…",
+            .cancelImport: "読み込みをキャンセル",
+            .damagedSessionHint: "セッション情報を読み取れません。音声ファイルを選択して再生するか、新しいセッションとして読み込めます。元のファイルは保持されます。",
+            .pendingImports: "%d件待機中",
             .reportIssue: "不具合報告・機能提案",
             .privacySummary: "音声と文字起こしはこのMacに保存されます。音声モデルのダウンロードと更新確認にはネットワークを使用します。",
             .quitBusyTitle: "処理中の作業があります",
@@ -429,6 +435,9 @@ enum Localization {
             .cancelQueued: "Cancel queued transcription",
             .cancelTranscription: "Cancel transcription",
             .progressCancelling: "Cancelling…",
+            .cancelImport: "Cancel imports",
+            .damagedSessionHint: "Session details could not be read. Select an audio file to play it or import it as a new session. Your original files are kept.",
+            .pendingImports: "%d files queued",
             .reportIssue: "Report an issue or suggest a feature",
             .privacySummary: "Audio and transcripts stay on this Mac. Model downloads and update checks use the network.",
             .quitBusyTitle: "Work is still in progress",

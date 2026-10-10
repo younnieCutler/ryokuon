@@ -13,6 +13,7 @@ enum AudioImporterError: Error {
 /// for speech (the app's whole purpose) but would audibly dull music.
 enum AudioImporter {
     static func importFile(_ url: URL, store: SessionStore, language: String) throws -> Session {
+        try Task.checkCancellation()
         let source = try AVAudioFile(forReading: url)
         var (session, directory) = try store.createSession(
             language: language, targetBundleID: nil, targetDisplayName: url.lastPathComponent, channels: 1
@@ -20,6 +21,7 @@ enum AudioImporter {
         do {
             let writer = try WAVWriter(url: directory.appendingPathComponent(AudioCapture.fileName))
             try convert(source, into: writer)
+            try Task.checkCancellation()
             try writer.finish()
             guard writer.framesWritten > 0 else { throw AudioImporterError.incompleteAudio }
 
@@ -48,6 +50,7 @@ enum AudioImporter {
         else { throw AudioImporterError.unsupportedFormat }
 
         while true {
+            try Task.checkCancellation()
             var conversionError: NSError?
             let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
                 guard let buffer = reader.next() else { outStatus.pointee = .endOfStream; return nil }

@@ -47,6 +47,7 @@ struct AudioLibrarySnapshot: Sendable {
     let nodes: [AudioLibraryNode]
     let sessions: [Session]
     let error: String?
+    var damagedSessionPaths: Set<String> = []
 
     func audioNode(at relativePath: String) -> AudioLibraryNode? {
         guard let found = node(at: relativePath), !found.isFolder else { return nil }
@@ -84,6 +85,7 @@ enum AudioLibraryScanner {
         let manager = FileManager.default
         var sessions: [Session] = []
         var firstError: String?
+        var damagedSessionPaths: Set<String> = []
 
         func descend(_ directory: URL, relativePath: String) -> [AudioLibraryNode] {
             let urls: [URL]
@@ -105,7 +107,11 @@ enum AudioLibraryScanner {
                 guard values?.isSymbolicLink != true else { return nil }
                 let path = relativePath.isEmpty ? url.lastPathComponent : relativePath + "/" + url.lastPathComponent
                 if values?.isDirectory == true {
-                    if let session = try? store.load(from: url) { sessions.append(session) }
+                    if let session = try? store.load(from: url) {
+                        sessions.append(session)
+                    } else if manager.fileExists(atPath: url.appendingPathComponent("session.json").path) {
+                        damagedSessionPaths.insert(path)
+                    }
                     return AudioLibraryNode(relativePath: path, name: url.lastPathComponent,
                                             kind: .folder, children: descend(url, relativePath: path), stamp: nil)
                 }
@@ -123,6 +129,6 @@ enum AudioLibraryScanner {
 
         let nodes = descend(root, relativePath: "")
         sessions.sort { $0.createdAt > $1.createdAt }
-        return AudioLibrarySnapshot(nodes: nodes, sessions: sessions, error: firstError)
+        return AudioLibrarySnapshot(nodes: nodes, sessions: sessions, error: firstError, damagedSessionPaths: damagedSessionPaths)
     }
 }

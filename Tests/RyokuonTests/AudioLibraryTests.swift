@@ -4,6 +4,24 @@ import Testing
 @testable import Ryokuon
 
 struct AudioLibraryTests {
+    @Test func damagedMetadataKeepsAudioBrowsableWithoutModifyingSource() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = root.appendingPathComponent("damaged")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = Data("invalid metadata".utf8)
+        let metadata = directory.appendingPathComponent("session.json")
+        try original.write(to: metadata)
+        let audio = directory.appendingPathComponent("call.wav")
+        try Data([1, 2, 3]).write(to: audio)
+        let snapshot = AudioLibraryScanner.scan(root: root)
+        #expect(snapshot.damagedSessionPaths == ["damaged"])
+        #expect(snapshot.sessions.isEmpty)
+        #expect(snapshot.audioNode(at: "damaged/call.wav") != nil)
+        #expect(try Data(contentsOf: metadata) == original)
+        #expect(try Data(contentsOf: audio) == Data([1, 2, 3]))
+    }
+
     @Test func searchFindsRenamedSessionsAndTreatsWhitespaceAsEmpty() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

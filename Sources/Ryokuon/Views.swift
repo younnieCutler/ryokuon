@@ -340,7 +340,19 @@ private struct SessionSidebar: View {
             if let fileName = appState.importingFileName {
                 HStack(spacing: RTheme.Spacing.sm) {
                     ProgressView().controlSize(.small)
-                    Text(appState.t(.importingFile, fileName)).lineLimit(1).truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appState.isCancellingImport ? appState.t(.progressCancelling) : appState.t(.importingFile, fileName))
+                            .lineLimit(1).truncationMode(.middle)
+                        if appState.pendingImportCount > 0 {
+                            Text(appState.t(.pendingImports, appState.pendingImportCount))
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Button { appState.cancelImports() } label: { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain)
+                        .help(appState.t(.cancelImport))
+                        .accessibilityLabel(appState.t(.cancelImport))
+                        .disabled(appState.isCancellingImport)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1164,6 +1176,12 @@ private struct FolderDetailPane: View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.md) {
             Label(node.name, systemImage: "folder").font(.title2.bold())
             Text(node.relativePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if appState.damagedSessionPaths.contains(node.relativePath) {
+                Label(appState.t(.damagedSessionHint), systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
             List(node.children) { child in
                 Button { selection = child.relativePath } label: {
                     Label(appState.sessions.first { $0.relativePath == child.relativePath }?.displayName ?? child.name,

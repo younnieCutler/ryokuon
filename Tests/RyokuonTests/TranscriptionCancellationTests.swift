@@ -45,6 +45,32 @@ struct TranscriptionCancellationTests {
         #expect(FileManager.default.fileExists(atPath: secondDirectory.appendingPathComponent("transcript.txt").path))
     }
 
+    @Test func cancellingImportBatchBeforeStartClearsQueueAndAllowsAnotherBatch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = AppState(sessionStore: SessionStore(rootDirectory: root))
+        let missing = root.appendingPathComponent("missing.wav")
+        app.importAudio([missing, missing])
+        #expect(app.pendingImportCount == 2)
+        app.cancelImports()
+        #expect(app.pendingImportCount == 0)
+        #expect(app.hasActiveWork)
+        for _ in 0..<200 {
+            if app.importingFileName == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!app.hasActiveWork)
+        #expect(app.lastError == nil)
+        app.importAudio([missing])
+        #expect(app.importingFileName != nil)
+        app.cancelImports()
+        for _ in 0..<200 {
+            if app.importingFileName == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!app.hasActiveWork)
+    }
+
     @Test func cancellingBeforeTaskStartsDoesNotInvokeRecognition() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

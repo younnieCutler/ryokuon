@@ -18,6 +18,7 @@ final class AppState {
     var isShowingSettings = false
     typealias TranscribeOperation = @Sendable (URL, String, Double, Double, @escaping @Sendable (String) -> Void) async throws -> [TranscriptWord]
     @ObservationIgnored private let transcribeOperation: TranscribeOperation
+    @ObservationIgnored private var transcriptionGeneration = UUID()
     @ObservationIgnored private var transcriptionTask: Task<Void, Never>?
     private(set) var isCancellingTranscription = false
     @ObservationIgnored private let trashSession: (Session) throws -> Void
@@ -29,6 +30,7 @@ final class AppState {
     private(set) var sessions: [Session] = []
     private(set) var libraryNodes: [AudioLibraryNode] = []
     private(set) var libraryError: String?
+    private(set) var damagedSessionPaths: Set<String> = []
     private(set) var libraryRevision = 0
     @ObservationIgnored private var librarySnapshot = AudioLibrarySnapshot(nodes: [], sessions: [], error: nil)
     @ObservationIgnored private var libraryWatcher: AudioLibraryWatcher?
@@ -146,6 +148,7 @@ final class AppState {
         libraryNodes = snapshot.nodes
         sessions = snapshot.sessions
         libraryError = snapshot.error
+        damagedSessionPaths = snapshot.damagedSessionPaths
         libraryRevision += 1
     }
 
@@ -650,6 +653,8 @@ final class AppState {
         transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
         let sessionID = session.relativePath
+        let generation = UUID()
+        transcriptionGeneration = generation
 
         transcriptionTask = Task {
             do {
@@ -667,6 +672,7 @@ final class AppState {
                 let words = try await transcribeOperation(directory, locale, session.gains.me, session.gains.remote) { [weak self] message in
                     Task { @MainActor in
                         guard let self, self.transcribingSessionID == sessionID,
+                              self.transcriptionGeneration == generation,
                               !self.isCancellingTranscription else { return }
                         self.transcribeProgress = self.localizedProgress(message)
                     }
@@ -754,27 +760,49 @@ final class AppState {
     /// and the sidebar shows this instead of looking frozen.
     private(set) var importingFileName: String?
 
+    @ObservationIgnored private var importTask: Task<Void, Never>?
+    private(set) var isCancellingImport = false
+    var pendingImportCount: Int { pendingImports.count }
+
+    func cancelImports() {
+        guard importingFileName != nil else { return }
+        pendingImports.removeAll()
+        isCancellingImport = true
+        importTask?.cancel()
+    }
+
     private var pendingImports: [(url: URL, language: String)] = []
 
     func importAudio(_ urls: [URL]) {
+        guard !isCancellingImport else { return }
         pendingImports.append(contentsOf: urls.map { ($0, language) })
         guard importingFileName == nil, let first = pendingImports.first else { return }
         // Claim the worker before scheduling it: a second drop joins this queue.
         importingFileName = first.url.lastPathComponent
         let root = sessionStore.rootDirectory
-        Task {
-            defer { importingFileName = nil }
-            while !pendingImports.isEmpty {
+        importTask = Task {
+            defer {
+                importingFileName = nil
+                isCancellingImport = false
+                importTask = nil
+            }
+            while !pendingImports.isEmpty && !Task.isCancelled {
                 let item = pendingImports.removeFirst()
                 importingFileName = item.url.lastPathComponent
                 do {
-                    let session = try await Task.detached {
+                    let worker = Task.detached {
                         try AudioImporter.importFile(item.url, store: SessionStore(rootDirectory: root), language: item.language)
-                    }.value
+                    }
+                    let session = try await withTaskCancellationHandler {
+                        try await worker.value
+                    } onCancel: { worker.cancel() }
                     reloadSessions()
-                    transcribeSession(session)
+                    if !Task.isCancelled { transcribeSession(session) }
                 } catch {
-                    lastError = t(.errorImportFailed, "\(item.url.lastPathComponent): \(error)")
+                    if !Task.isCancelled && !(error is CancellationError) {
+                        lastError = t(.errorImportFailed, "\(item.url.lastPathComponent): \(error)")
+                    }
+                    reloadSessions()
                 }
             }
         }

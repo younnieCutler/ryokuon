@@ -19,9 +19,30 @@ struct AudioImporterTests {
         try file.write(from: buffer)
     }
 
+    @Test func cancelledImportPreservesInputAndCreatesNoSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("memo.m4a")
+        try makeM4A(at: source)
+        let original = try Data(contentsOf: source)
+        let store = SessionStore(rootDirectory: root.appendingPathComponent("sessions"))
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try AudioImporter.importFile(source, store: store, language: "en-US")
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled import unexpectedly succeeded")
+        } catch is CancellationError { }
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: store.rootDirectory.path).isEmpty)
+    }
+
     @Test func importsM4AAs16kMonoSession() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("memo.m4a")
         try makeM4A(at: source)
 
