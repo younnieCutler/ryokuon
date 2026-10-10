@@ -157,6 +157,7 @@ struct RyokuonSplitView: View {
                     }
                 }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
             .onAppear {
                 appState.reloadSessions()
                 if let remembered = UserDefaults.standard.string(forKey: "dev.ryokuon.lastSelectedAudioPath") {
@@ -366,6 +367,8 @@ private struct SessionSidebar: View {
             Divider()
             RecordingControlBar(appState: appState)
         }
+        .onAppear { expandSelection() }
+        .onChange(of: selection) { _, _ in expandSelection() }
         .onChange(of: isEditing) { _, newValue in if !newValue { selectedIDs.removeAll() } }
         .dropDestination(for: URL.self) { urls, _ in
             let audio = urls.filter { AudioLibraryScanner.audioExtensions.contains($0.pathExtension.lowercased()) }
@@ -402,6 +405,12 @@ private struct SessionSidebar: View {
         } message: {
             Text(appState.t(.deleteConfirmMessage))
         }
+    }
+
+    private func expandSelection() {
+        guard let selection else { return }
+        let parts = selection.split(separator: "/")
+        for length in 1..<parts.count { expandedFolders.insert(parts.prefix(length).joined(separator: "/")) }
     }
 
     private func toggleSelection(_ id: String) {
@@ -940,6 +949,7 @@ struct SessionDetailPane: View {
                             }
                     }
                     .listStyle(.plain)
+                    .frame(minHeight: 0, maxHeight: .infinity)
                     .searchable(text: $query, prompt: appState.t(.searchPlaceholder))
                     .onChange(of: currentLineID) { _, newValue in
                         guard let newValue else { return }
@@ -948,8 +958,15 @@ struct SessionDetailPane: View {
                 }
             }
 
-            Divider()
-            CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .background(.background)
         }
         .onAppear { loadTranscript() }
         .onChange(of: appState.transcribingSessionID) { oldValue, _ in
