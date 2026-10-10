@@ -27,9 +27,10 @@ struct AudioImporterTests {
         try makeM4A(at: source)
         let original = try Data(contentsOf: source)
         let store = SessionStore(rootDirectory: root.appendingPathComponent("sessions"))
+        let sessionRoot = store.rootDirectory
         let task = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try AudioImporter.importFile(source, store: store, language: "en-US")
+            return try AudioImporter.importFile(source, store: SessionStore(rootDirectory: sessionRoot), language: "en-US")
         }
         do {
             _ = try await task.value

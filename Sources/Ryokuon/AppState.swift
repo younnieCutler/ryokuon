@@ -829,7 +829,6 @@ final class AppState {
         defer { exportingSessionIDs.remove(session.relativePath) }
         let directory = sessionStore.directory(for: session)
         let isFull = range.lowerBound <= 0 && range.upperBound >= session.durationSeconds
-        var written: [URL] = []
         do {
             let plan = try SessionExportPlan(session: session, range: range, directory: destination ?? directory,
                                              mp3: mp3, markdown: markdown)
@@ -837,6 +836,8 @@ final class AppState {
                 lastError = t(.errorExportExists)
                 return false
             }
+            var batch = try ExportBatch(destinations: plan.urls, allowOverwrite: allowOverwrite)
+            defer { batch.cleanup() }
             // Read the transcript before starting the encoder: a missing text file
             // must not leave an MP3 behind from an otherwise invalid combined job.
             let transcript = markdown
@@ -844,12 +845,12 @@ final class AppState {
             if mp3 {
                 guard let audioURL = AudioCapture.audioFileURL(in: directory) else { throw MP3ExporterError.noAudio }
                 guard let mp3URL = plan.mp3URL else { throw MP3ExporterError.invalidRange }
+                let stagedMP3 = try batch.stagedURL(for: mp3URL)
                 let gains = session.gains
                 try await Task.detached {
                     try MP3Exporter.export(from: audioURL, range: range, gains: gains, bitrate: bitrate,
-                                           mono: mono, to: mp3URL)
+                                           mono: mono, to: stagedMP3)
                 }.value
-                written.append(mp3URL)
             }
             if markdown {
                 guard let text = transcript, let mdURL = plan.markdownURL else { throw MP3ExporterError.invalidRange }
@@ -858,11 +859,11 @@ final class AppState {
                     durationSeconds: session.durationSeconds, language: session.language,
                     rangeMs: isFull ? nil : Int(range.lowerBound * 1000) ... Int(range.upperBound * 1000)
                 )
-                try md.write(to: mdURL, atomically: true, encoding: .utf8)
-                written.append(mdURL)
+                try md.write(to: batch.stagedURL(for: mdURL), atomically: true, encoding: .utf8)
             }
             lastError = nil
-            NSWorkspace.shared.activateFileViewerSelecting(written)
+            try batch.commit()
+            NSWorkspace.shared.activateFileViewerSelecting(plan.urls)
             return true
         } catch {
             lastError = t(.errorExportFailed, "\(error)")

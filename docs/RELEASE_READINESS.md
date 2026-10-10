@@ -23,7 +23,8 @@ GUI behavior, audio listening, speech-model execution and notarized distribution
 - Folder detail browsing, whitespace-normalized search, no-results feedback and Finder reveal.
 - Pause/resume, ten-second navigation, EOF-safe seek, live saved gains and output changes.
 - Bounded playback scheduling and demand-driven full-transcription audio input.
-- Optional transcript following, explicit rename save, cancellable queued transcription.
+- Optional transcript following, explicit rename save, cancellation of active/queued transcription and import batches.
+- Damaged session metadata guidance preserves source files and keeps audio browsable.
 - Precise export boundaries, destination selection and overwrite confirmation.
 - Trash-based session removal using full relative identity, not duplicated folder basenames.
 - Deferred recording permissions, permission-recovery guidance, Dock/Command-Tab presence.
@@ -59,13 +60,13 @@ Increment Info.plist only for a validated release. Do not store certificates, ac
 
 ## Remaining product limits
 
-- Active transcription cannot yet be cancelled; queued jobs can. Quitting waits for active work.
+- Active transcription, queued jobs and import batches support cancellation. Cleanup keeps the busy guard until workers finish; a conversion already committed may remain completed.
 - Recognition words/results still accumulate in memory even though audio input is streamed.
 - WAV recording stops at the RIFF size limit; automatic file rotation is not implemented.
-- MP3 and Markdown are individually published, not one all-or-nothing batch transaction.
+- MP3 and Markdown are staged together; publication errors roll back previous exports. Failed rollback retains backups and a recovery map. A process crash during multi-file renames still requires manual recovery from the staging directory.
 - Mixed-language recognition and robust speaker diarization are not guaranteed.
 - Automatic language choice is a confidence heuristic; imported audio is mono.
-- A damaged-metadata recovery UI and sample-rate/device hardware fault coverage remain follow-ups.
+- Damaged metadata is identified in folder details; audio can be opened or imported into a new session. Original metadata is not automatically reconstructed. Sample-rate/device hardware fault coverage remains a follow-up.
 
 ## Adoption target
 

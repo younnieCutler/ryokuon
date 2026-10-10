@@ -79,6 +79,8 @@ bash Scripts/bundle.sh
 open .build/Ryokuon.app
 ```
 
+Run the synthetic Japanese/Korean/English speech integration checks with `RYOKUON_SPEECH_E2E=1 swift test --filter SpeechPipelineIntegrationTests`. This installs Apple speech assets and uses temporary generated audio.
+
 Use a temporary storage root for E2E, never real meeting recordings. The [validation guide](CONTRIBUTING.md) describes the defaults override and safe restoration. CI uses macOS 26 and retains build/test logs; a CI pass cannot validate real call capture, TCC dialogs, accessibility or notarized update installation.
 
 CLI helpers are in `bin/ryokuon` (`list`, `show`, `search`, `range`). Use relative paths printed by `list`, including parent folders.
@@ -88,3 +90,9 @@ CLI helpers are in `bin/ryokuon` (`list`, `show`, `search`, `range`). Use relati
 Publishing requires a Developer ID Application certificate and a `notarytool` keychain profile. The release script submits for notarization, staples the app, validates it and only then publishes. Credentials are never committed. See [release readiness](docs/RELEASE_READINESS.md).
 
 No release is approved merely because source changes are merged. Licensing, hardware tests, GUI evidence and signed distribution remain explicit release gates.
+
+### Cancelling and recovering work
+
+Cancel an active transcription from its session detail or remove a queued transcription before it starts. The import activity row can cancel the current import and all pending imports. Wait for cleanup to finish before quitting; completed imports and source recordings are retained.
+
+If session metadata is damaged, open its folder in the library. The warning explains how to play the remaining audio or import it as a new session. Ryokuon does not overwrite the damaged metadata automatically.
