@@ -30,9 +30,15 @@ jobs:
           codesign --verify --deep --strict .build/Ryokuon.app
           bash Scripts/test-cli.sh
           bash -n install.sh Scripts/*.sh Resources/update-helper.sh bin/ryokuon
+      - name: Actual app screenshot with fictional data
+        run: bash Scripts/capture-demo.sh
+      - name: Package development artifact
+        run: ditto -c -k --keepParent .build/Ryokuon.app .build/Ryokuon-development.zip
       - name: Development build artifact (not a production release)
         uses: actions/upload-artifact@v4
         with:
           name: Ryokuon-development
-          path: .build/Ryokuon.app
+          path: |
+            .build/Ryokuon-development.zip
+            .build/visual-evidence/*.png
           retention-days: 7

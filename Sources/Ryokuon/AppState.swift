@@ -22,6 +22,7 @@ final class AppState {
     private(set) var libraryNodes: [AudioLibraryNode] = []
     private(set) var libraryError: String?
     private(set) var libraryRevision = 0
+    private(set) var requestedSelectionPath: String?
     private(set) var meetingSearchIndex: [String: String] = [:]
     @ObservationIgnored private var searchIndexTask: Task<Void, Never>?
 
@@ -424,7 +425,11 @@ final class AppState {
         recordingTimer = nil
         recordingStartDate = nil
         recordingElapsed = 0
+        // Failed finalization leaves recording metadata for header recovery.
+        // Try now as well, so the saved audio can be opened without a restart.
+        sessionStore.recoverCrashedSessions()
         reloadSessions()
+        requestedSelectionPath = session.relativePath + "/" + AudioCapture.fileName
         // Same flow as an imported file: a finished recording goes straight to text.
         if shouldTranscribe && automaticallyTranscribe, let finished = sessions.first(where: { $0.relativePath == session.relativePath }), finished.state == .finished {
             transcribeSession(finished)
@@ -520,6 +525,7 @@ final class AppState {
     /// transcription run) picks up the new value; the audio file itself is
     /// never touched.
     func setGains(for session: Session, me: Double, remote: Double) {
+        guard me.isFinite, remote.isFinite, (0...4).contains(me), (0...4).contains(remote) else { return }
         persist(session) { $0.gains = .init(me: me, remote: remote) }
     }
 
@@ -748,6 +754,7 @@ final class AppState {
                         try AudioImporter.importFile(item.url, store: SessionStore(rootDirectory: root), language: item.language)
                     }.value
                     reloadSessions()
+                    requestedSelectionPath = session.relativePath + "/" + AudioCapture.fileName
                     if automaticallyTranscribe { transcribeSession(session) }
                 } catch {
                     lastError = t(.errorImportFailed, "\(item.url.lastPathComponent): \(error)")

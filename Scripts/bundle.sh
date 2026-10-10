@@ -30,7 +30,7 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/Resources/update-helper.sh" "$APP/Contents/Resources/update-helper.sh"
-cp "$ROOT/bin/ryokuon" "$APP/Contents/MacOS/ryokuon-cli"
+cp "$ROOT/bin/ryokuon" "$APP/Contents/Resources/ryokuon-cli"
 for region in en ko ja; do
   mkdir -p "$APP/Contents/Resources/$region.lproj"
   cp "$ROOT/Resources/$region.lproj/InfoPlist.strings" "$APP/Contents/Resources/$region.lproj/InfoPlist.strings"

@@ -159,11 +159,35 @@ struct RyokuonSplitView: View {
             }
             .onAppear {
                 appState.reloadSessions()
+                if let remembered = UserDefaults.standard.string(forKey: "dev.ryokuon.lastSelectedAudioPath") {
+                    let prefix = appState.sessionStore.rootDirectory.path + "/"
+                    if remembered.hasPrefix(prefix) {
+                        let relative = String(remembered.dropFirst(prefix.count))
+                        if appState.audioNode(at: relative) != nil { selection = relative }
+                    }
+                }
                 adjustColumns(for: geometry.size.width)
             }
             .onChange(of: geometry.size.width) { _, width in adjustColumns(for: width) }
             .onChange(of: appState.libraryRevision) { _, _ in
-                if let selection, appState.audioNode(at: selection) == nil { self.selection = nil }
+                if let selection, appState.audioNode(at: selection) == nil {
+                    // Verified FLAC conversion changes call.wav to call.flac.
+                    // Keep the same meeting open instead of losing selection.
+                    let parent = (selection as NSString).deletingLastPathComponent
+                    if let session = appState.sessions.first(where: { $0.relativePath == parent }),
+                       let audio = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session)) {
+                        self.selection = parent + "/" + audio.lastPathComponent
+                    } else { self.selection = nil }
+                }
+            }
+            .onChange(of: appState.requestedSelectionPath) { _, path in
+                if let path, appState.audioNode(at: path) != nil { selection = path }
+            }
+            .onChange(of: selection) { _, path in
+                if let path {
+                    UserDefaults.standard.set(appState.sessionStore.rootDirectory.appendingPathComponent(path).path,
+                                              forKey: "dev.ryokuon.lastSelectedAudioPath")
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 appState.permissions.refreshMicrophoneStatus()

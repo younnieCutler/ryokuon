@@ -29,6 +29,11 @@ private final class ConsumeOnceBox: @unchecked Sendable {
 /// AVAudioConverter, interleaves L/R, and appends to one WAVWriter. Nothing
 /// that can allocate, lock for long, or hit disk runs on the audio thread —
 /// see RingBuffer's doc comment for why.
+enum CaptureFailure: LocalizedError {
+    case audioOverrun
+    var errorDescription: String? { "Audio input overflowed. The recording was stopped; its saved portion is recoverable." }
+}
+
 final class AudioCapture {
     private let device: CaptureDevice
     private var procID: AudioDeviceIOProcID?
@@ -225,6 +230,7 @@ final class AudioCapture {
         guard !meSamples.isEmpty || !remoteSamples.isEmpty else { return }
 
         do {
+            guard micRing.droppedSamples == 0, tapRing.droppedSamples == 0 else { throw CaptureFailure.audioOverrun }
             let me = try convert(meSamples, using: meConverter)
             let remote = try convert(remoteSamples, using: remoteConverter)
             try writer.append(isMono ? downmix(me, remote) : interleave(left: me, right: remote))
