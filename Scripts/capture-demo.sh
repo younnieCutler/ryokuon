@@ -30,9 +30,12 @@ mkdir -p "$ROOT/.build/visual-evidence"
 RYOKUON_UI_DIAGNOSTICS=1 "$ROOT/.build/Ryokuon.app/Contents/MacOS/Ryokuon" > "$ROOT/.build/visual-evidence/app.log" 2>&1 &
 sleep 8
 pgrep -x Ryokuon >/dev/null
-open -a "$ROOT/.build/Ryokuon.app"
-sleep 1
 mkdir -p "$ROOT/.build/visual-evidence"
 screencapture -x "$ROOT/.build/visual-evidence/meeting-workspace.png"
-sleep 6
+for attempt in {1..15}; do
+    grep -q 'Narrow-window visual check:' "$ROOT/.build/visual-evidence/app.log" && break
+    sleep 1
+done
+grep -q 'Narrow-window visual check:' "$ROOT/.build/visual-evidence/app.log"
+sleep 2
 screencapture -x "$ROOT/.build/visual-evidence/narrow-workspace.png"

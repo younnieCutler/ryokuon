@@ -111,6 +111,20 @@ private func wavInfo(_ url: URL) throws -> (frameCount: Int, sampleRate: UInt32)
 }
 
 struct WAVWriterSafetyTests {
+    @Test func recoveryDoesNotFollowASymbolicLink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let original = root.appendingPathComponent("original.wav")
+        let link = root.appendingPathComponent("call.wav")
+        var bytes = WAVWriter.header(dataBytes: 0)
+        bytes.append(contentsOf: [1, 0, 2, 0])
+        try bytes.write(to: original)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
+        #expect(throws: (any Error).self) { try WAVWriter.repairHeader(at: link) }
+        #expect(try Data(contentsOf: original) == bytes)
+    }
+
     @Test func existingAudioCannotBeOverwritten() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
         defer { try? FileManager.default.removeItem(at: url) }

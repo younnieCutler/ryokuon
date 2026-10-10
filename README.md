@@ -8,6 +8,10 @@ Native SwiftUI · On-device transcription · English / 日本語 / 한국어 · 
 
 > **Release preparation:** this branch adds the production distribution path and meeting workspace. A public production build still requires Developer ID signing, Apple notarization and the [hardware acceptance checks](docs/RELEASE.md). Existing 0.1.x downloads do not retroactively receive those guarantees.
 
+![Ryokuon meeting library, transcript and playback controls](docs/images/meeting-workspace.png)
+
+Actual macOS app with fictional meeting data.
+
 ## What it does
 
 - **Record the call you choose.** Microphone + one selected app, with visible levels and silence warnings. With an external mic, left = you and right = remote. Built-in mic recordings are mixed to mono; this is not multi-person speaker diarization.

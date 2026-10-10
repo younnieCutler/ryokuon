@@ -100,7 +100,11 @@ final class WAVWriter {
 
     static func repairHeader(at url: URL, channels: UInt16 = 1) throws {
         guard (1...2).contains(channels) else { throw WAVWriterError.invalidChannels }
-        let handle = try FileHandle(forUpdating: url)
+        // Finder symlinks must not turn recovery into a write outside this
+        // session. Claim the actual file without following the final link.
+        let descriptor = Darwin.open(url.path, O_RDWR | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         let size = try handle.seekToEnd()
         guard size > headerSize else { return }

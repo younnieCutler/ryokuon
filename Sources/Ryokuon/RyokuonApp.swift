@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["RYOKUON_UI_DIAGNOSTICS"] == "1" {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(3))
+                NSApp.activate(ignoringOtherApps: true)
+                for window in NSApp.windows where window.frame.width > 500 {
+                    window.makeKeyAndOrderFront(nil)
+                }
                 for window in NSApp.windows {
                     print("Window: \(window.frame), content: \(window.contentLayoutRect)")
                     if let view = window.contentView { Self.traceView(view, depth: 0) }
