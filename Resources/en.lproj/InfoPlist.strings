@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Record your voice alongside the selected app's audio.";
+"NSAudioCaptureUsageDescription" = "Record the remote side of a call from the app you choose.";
+"NSSpeechRecognitionUsageDescription" = "Transcribe your recordings on this Mac.";

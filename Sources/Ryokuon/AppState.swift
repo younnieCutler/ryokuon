@@ -138,7 +138,7 @@ final class AppState {
     }
 
     func bookmarkCurrentRecording() {
-        guard let session = currentSession, let capture, let directory = currentDirectory else { return }
+        guard currentSession != nil, let capture, let directory = currentDirectory else { return }
         do {
             var fresh = try sessionStore.load(from: directory)
             fresh.bookmarks.append(.init(id: UUID(), seconds: Double(capture.framesWritten) / Double(WAVWriter.sampleRate), title: ""))

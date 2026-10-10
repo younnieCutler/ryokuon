@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "選択したアプリの音声と一緒に自分の声を録音します。";
+"NSAudioCaptureUsageDescription" = "選択したアプリから通話相手の声を録音します。";
+"NSSpeechRecognitionUsageDescription" = "この Mac で録音を文字起こしします。";
