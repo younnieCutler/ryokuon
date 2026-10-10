@@ -75,3 +75,23 @@ struct MeetingPersistenceTests {
         #expect(!FileManager.default.fileExists(atPath: duplicate.path))
     }
 }
+
+@MainActor
+struct DurableQueueTests {
+    @Test func interruptedTranscriptionClaimsTheQueueBeforeReturningFromStartup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        var (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "test")
+        session.state = .finished
+        session.transcriptionState = .transcribing
+        try store.save(session, in: directory)
+        let app = AppState(sessionStore: store)
+        #expect(try store.load(from: directory).transcriptionState == .queued)
+        #expect(app.isQueuedForTranscription(session.relativePath))
+        #expect(!app.canChangeStorageFolder)
+        // Deleting queued work is explicit and removes its persistent state.
+        app.delete([session.relativePath])
+        #expect(app.canChangeStorageFolder)
+    }
+}

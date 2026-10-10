@@ -168,11 +168,9 @@ final class AppState {
         for session in sessions where session.transcriptionState == .transcribing {
             persist(session) { $0.transcriptionState = .queued }
         }
-        let pending = sessions.filter { $0.transcriptionState == .queued }
-        if !pending.isEmpty {
-            Task { [weak self] in
-                for session in pending { self?.transcribeSession(session) }
-            }
+        transcribeQueue = sessions.filter { $0.transcriptionState == .queued }.map(\.relativePath)
+        if !transcribeQueue.isEmpty {
+            Task { [weak self] in self?.startNextTranscription() }
         }
         libraryWatcher = AudioLibraryWatcher { [weak self] in
             Task { @MainActor in self?.scheduleLibraryRefresh() }
@@ -337,15 +335,15 @@ final class AppState {
 
             newCapture.onError = { [weak self] error in
                 Task { @MainActor in
-                    guard let self, self.isRecording else { return }
-                    self.stop()
+                    guard let self, self.isRecording, self.currentDirectory == directory else { return }
+                    self.stop(automaticallyTranscribe: false)
                     self.lastError = self.t(.errorStopFailed, "\(error)")
                 }
             }
 
             newCapture.onLevel = { [weak self] me, remote in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.isRecording, self.currentDirectory == directory else { return }
                     self.meLevelDB = me
                     self.remoteLevelDB = remote
                     let now = Date()
@@ -676,13 +674,14 @@ final class AppState {
             transcribingSessionID = nil
             transcribeProgress = nil
             reloadSessions()
-            while !transcribeQueue.isEmpty {
-                let nextID = transcribeQueue.removeFirst()
-                if let next = sessions.first(where: { $0.relativePath == nextID }) { // skip ones deleted while waiting
-                    transcribeSession(next)
-                    break
-                }
-            }
+            startNextTranscription()
+        }
+    }
+
+    private func startNextTranscription() {
+        while transcribingSessionID == nil, !transcribeQueue.isEmpty {
+            let nextPath = transcribeQueue.removeFirst()
+            if let next = sessions.first(where: { $0.relativePath == nextPath }) { transcribeSession(next) }
         }
     }
 
