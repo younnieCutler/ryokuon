@@ -12,7 +12,7 @@ struct MainWindowView: View {
             if !hasOpenedLibrary { showingPermissions = !appState.permissions.allGranted; hasOpenedLibrary = true }
         }
         .sheet(isPresented: $showingPermissions) { OnboardingView(appState: appState) }
-        .frame(minWidth: 520, minHeight: 380)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity)
     }
 }
 
@@ -132,8 +132,7 @@ struct RyokuonSplitView: View {
     @State private var wasAutoCollapsed = false
 
     var body: some View {
-        GeometryReader { geometry in
-            NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
                 SessionSidebar(appState: appState, selection: $selection, isEditing: $isEditing)
                     .navigationSplitViewColumnWidth(min: 190, ideal: 260, max: 340)
             } detail: {
@@ -157,7 +156,6 @@ struct RyokuonSplitView: View {
                     }
                 }
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
             .onAppear {
                 appState.reloadSessions()
                 if let remembered = UserDefaults.standard.string(forKey: "dev.ryokuon.lastSelectedAudioPath") {
@@ -167,9 +165,10 @@ struct RyokuonSplitView: View {
                         if appState.audioNode(at: relative) != nil { selection = relative }
                     }
                 }
-                adjustColumns(for: geometry.size.width)
             }
-            .onChange(of: geometry.size.width) { _, width in adjustColumns(for: width) }
+            .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.width } action: { width in
+                adjustColumns(for: width)
+            }
             .onChange(of: appState.libraryRevision) { _, _ in
                 if let selection, appState.audioNode(at: selection) == nil {
                     // Verified FLAC conversion changes call.wav to call.flac.
@@ -214,7 +213,6 @@ struct RyokuonSplitView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsSheetView(appState: appState)
             }
-        }
     }
 
     private func adjustColumns(for width: CGFloat) {
@@ -330,6 +328,7 @@ private struct SessionSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .frame(minHeight: 0, maxHeight: .infinity)
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
             }
             if isEditing && !selectedIDs.isEmpty {
@@ -366,6 +365,7 @@ private struct SessionSidebar: View {
             }
             Divider()
             RecordingControlBar(appState: appState)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear { expandSelection() }
         .onChange(of: selection) { _, _ in expandSelection() }
