@@ -1,89 +1,82 @@
 # Ryokuon
 
-通話を自分の声と相手の声に分けて録音し、文字起こしまで Mac の中で済ませる macOS アプリです。音声も文字起こしの結果も、外部のサーバーには送りません。
+**Your meetings, on your Mac.** Record both sides of a call, find what was said, and leave with notes you can use.
 
-## できること
+Native SwiftUI · On-device transcription · English / 日本語 / 한국어 · No account or subscription
 
-### 双方向録音
+[日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Privacy](PRIVACY.md) · [Contributing](CONTRIBUTING.md)
 
-マイクの音（自分）と、選んだアプリの音（相手）を同時に録ります。相手側は Zoom でも Chrome でも、音を出しているアプリなら選べます。保存先は 1 つのステレオファイルで、左チャンネルが自分、右チャンネルが相手です。
+> **Release preparation:** this branch adds the production distribution path and meeting workspace. A public production build still requires Developer ID signing, Apple notarization and the [hardware acceptance checks](docs/RELEASE.md). Existing 0.1.x downloads do not retroactively receive those guarantees.
 
-Mac の内蔵マイクで録音した場合だけはモノラルになります。スピーカーの音がマイクに回り込むので、左右に分けても結局どちらにも両方の声が入ってしまうからです。
+![Ryokuon meeting library, transcript and playback controls](docs/images/meeting-workspace.png)
 
-### 文字起こし
+Actual macOS app with fictional meeting data.
 
-Apple のオンデバイス音声認識（`SpeechAnalyzer`）を使います。日本語、韓国語、英語は自動で判定するので、録音のたびに言語を選ぶ必要はありません。まれに判定が外れたら、「再文字起こし ▾」で言語を指定してやり直せます。
+## What it does
 
-結果は `開始ミリ秒|話者|テキスト` の 1 行 1 発話で保存します。そのまま AI に読ませやすい形です。
+- **Record the call you choose.** Microphone + one selected app, with visible levels and silence warnings. With an external mic, left = you and right = remote. Built-in mic recordings are mixed to mono; this is not multi-person speaker diarization.
+- **Turn it into searchable text.** Apple SpeechAnalyzer processes audio on-device. Japanese, Korean and English, with automatic language selection and manual overrides. Queued transcription survives restarting the app.
+- **Find the decision.** Search across recording titles, apps, transcripts, notes and bookmarks. Multiple search terms must all match the same meeting.
+- **Keep useful context.** Add time-stamped bookmarks during recording or playback. Write meeting notes and include them in Markdown exports.
+- **Use your own files.** Import M4A, MP3, WAV or FLAC. Export full recordings or selected ranges to MP3 and Markdown. Browse nested folders without copying their files.
+- **Keep the original safe.** Crash-recoverable WAV headers, stopped recording on write/overflow failures, low-space checks and verified lossless FLAC conversion. Playback and transcription stream audio rather than loading an entire meeting into PCM memory.
 
-### 音声ファイルの読み込み
+## Requirements and installation
 
-iPhone のボイスメモなど、m4a・mp3・wav ファイルをサイドバーにドラッグすると、録音したものと同じように文字起こしが始まります。
+Apple silicon · macOS 26+ · Xcode 26 / Swift 6.2+ to build from source.
 
-### 書き出し
+For a production release, download the notarized `Ryokuon.dmg` from [Releases](https://github.com/younnieCutler/ryokuon/releases), open it and drag Ryokuon into Applications. Verify that the release notes identify a notarized build. Keep Gatekeeper enabled.
 
-波形の上をドラッグして範囲を決め、MP3、分析用の Markdown、またはその両方を書き出せます。Markdown にはタイムスタンプが付きます。
-
-文字起こしの行をクリックすればその位置から再生でき、キーワード検索もできます。
-
-## 動作環境
-
-Apple シリコン搭載の Mac で、macOS 26 以降が必要です。
-
-## インストール
-
-ターミナルで次のコマンドを実行します。
+For development:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash
-```
-
-最新版が `/Applications` に入り、そのまま起動します。Homebrew などを別に入れる必要はありません。MP3 エンコーダーの `lame` はアプリに同梱しています。
-
-ブラウザでダウンロードしたアプリと違って、`curl` で入れた場合は「開発元を確認できません」という警告が出ません。
-
-アップデートも同じコマンドです。録音中に実行した場合、インストーラーは何もせずに終了します（録音が途切れないようにするためです）。録音を終えてから実行してください。
-
-アンインストールはこちらです。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash -s -- --uninstall
-```
-
-アプリ本体、設定、プライバシー権限を削除します。録音データ（`~/Documents/ryokuon`）は残るので、不要なら自分で消してください。
-
-## 使い方
-
-1. 初回起動時に、マイク、システムオーディオ録音、保存フォルダへのアクセスを順番に許可します。
-2. 録音したいアプリで音を鳴らすと、サイドバー下の「録音するアプリ」に出てきます。アプリ名を確かめて「録音開始」を押します。
-3. 録音を止めると文字起こしが自動で始まります。最初の 1 回は Apple の音声認識モデルをダウンロードするので、少し待ちます。
-4. 書き出すときは録音を選んで、右上の「書き出す」を押します。ファイルは録音フォルダに保存され、Finder が開きます。
-
-## 保存場所
-
-録音ごとに `~/Documents/ryokuon/<日時>/` というフォルダができます。保存先は設定で変えられます。Finderでこの保存先の下にプロジェクト用フォルダを作り、録音フォルダを移動して整理しても構いません。Ryokuonは下位フォルダまで自動で読み直します。
-
-| ファイル | 中身 |
-|---|---|
-| `call.wav` → `call.flac` | 音声。文字起こしが終わると FLAC に変換され、容量がおよそ半分になります |
-| `transcript.txt` | 1 行 1 発話の文字起こし。話者は M が自分、R が相手、U がモノラル |
-| `raw.json` | 単語ごとの認識結果と信頼度 |
-| `session.json` | 名前、言語、長さなど |
-
-ターミナルで文字起こしを探したいときは `bin/ryokuon` が使えます（`list`、`show`、`search`、`range`）。`list` に出る保存先からの相対パスを、ほかのコマンドに渡します。
-
-## ソースからビルド
-
-```bash
-export RYOKUON_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)"
-# 自分の署名 ID は: security find-identity -v -p codesigning
-brew install lame          # ビルド時にアプリへ同梱される
+git clone https://github.com/younnieCutler/ryokuon.git
+cd ryokuon
+export RYOKUON_SIGN_IDENTITY='Apple Development: your identity (TEAMID)'
 bash Scripts/bundle.sh
 open .build/Ryokuon.app
 ```
 
-テストは `swift test` で動きます。リリースを公開するときは `bash Scripts/make_release.sh --publish` を実行すると、`Ryokuon.zip` が `v<バージョン>` として GitHub にアップロードされます。
+The bundle builder compiles a pinned, static LAME helper, verifies its source checksum, and includes its license, source and build recipe. End users need no Homebrew. For tests outside the bundle, install `lame` with Homebrew and run `bash Scripts/validate.sh`. `RYOKUON_SIGN_IDENTITY=-` makes an ad-hoc development build; it is not a distributable notarized release, and stable signing is recommended for permission persistence.
 
-## 作者
+## A first meeting
 
-Jeongyun Kim（ehrktm090@gmail.com）
+1. Open the library. Import and playback work without granting recording permissions.
+2. Select **Set up recording permissions** for microphone, app audio and storage access. Notify participants and confirm consent.
+3. Play sound in the call app, choose that app, and start recording. Check both meters; a headset helps keep the two sides separate.
+4. Add bookmarks for useful moments. Stop and save. Automatic transcription can be turned off in Settings.
+5. Select the saved audio file in the library. Click a transcript line or bookmark to hear that moment; add notes and export when ready.
+
+`⌘I` imports audio · `⇧⌘B` bookmarks an active recording · `⇧⌘N` opens notes for the selected meeting.
+
+Auto language selection chooses one language for the recording using a short probe. Mixed-language calls and several speakers on the remote channel need manual review. Download models once while online; installed speech models work locally. Forced sleep stops and saves recording; closing the window keeps the app available in the menu bar.
+
+## Open, local files
+
+Default storage: `~/Documents/ryokuon/<timestamp>/`. Change the root in Settings; existing recordings remain in the old location. Move session folders into project subfolders using Finder.
+
+| File | Contents |
+| --- | --- |
+| `call.wav` / `call.flac` | Recorded or imported audio; WAV is removed only after verified lossless conversion |
+| `transcript.txt` | `startMs\|speaker\|text`, one utterance per line (`M`, `R`, or mono `U`) |
+| `raw.json` | Recognized words, time ranges and confidence |
+| `session.json` | Stable ID, title, notes, bookmarks, gains, language and transcription state |
+
+These files are portable and work with other tools. Back up the storage folder as you would any important document. Session deletion is permanent and removes its exports too.
+
+```bash
+bin/ryokuon list
+bin/ryokuon show project/2026-10-10_0930
+bin/ryokuon search project/2026-10-10_0930 'release [plan]'
+bin/ryokuon range project/2026-10-10_0930 60000 120000
+```
+
+The CLI uses the GUI's configured root on macOS; `RYOKUON_ROOT` overrides it for automation. Search treats the keyword literally and rejects paths outside the root. A copy is bundled at `Ryokuon.app/Contents/Resources/ryokuon-cli`.
+
+## Development
+
+[macOS CI](https://github.com/younnieCutler/ryokuon/actions/workflows/ci.yml) runs Swift tests, a release build, bundle signature checks and isolated CLI regression tests. Real microphones, Bluetooth route changes, crash recovery during capture and long-meeting performance remain hardware acceptance tests.
+
+Read [Architecture](docs/ARCHITECTURE.md), [Release checklist](docs/RELEASE.md) and [Contributing](CONTRIBUTING.md). Small, reproducible bug reports and focused PRs are welcome. Do not attach real meeting recordings, transcripts or private business content to public issues.
+
+Ryokuon source is [MIT licensed](LICENSE). The bundled standalone LAME encoder remains LGPL-2.0-or-later; see [Third-party notices](THIRD_PARTY_NOTICES.md).

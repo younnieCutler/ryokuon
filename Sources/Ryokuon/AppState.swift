@@ -22,6 +22,14 @@ final class AppState {
     private(set) var libraryNodes: [AudioLibraryNode] = []
     private(set) var libraryError: String?
     private(set) var libraryRevision = 0
+    private(set) var requestedSelectionPath: String?
+    private(set) var meetingSearchIndex: [String: String] = [:]
+    @ObservationIgnored private var searchIndexTask: Task<Void, Never>?
+
+    func matchesMeeting(_ relativePath: String, query: String) -> Bool {
+        MeetingSearch.matches(meetingSearchIndex[relativePath] ?? "", query: query)
+    }
+
     @ObservationIgnored private var librarySnapshot = AudioLibrarySnapshot(nodes: [], sessions: [], error: nil)
     @ObservationIgnored private var libraryWatcher: AudioLibraryWatcher?
     @ObservationIgnored private var libraryRefreshTask: Task<Void, Never>?
@@ -103,6 +111,48 @@ final class AppState {
     private(set) var recordingElapsed: TimeInterval = 0
     private var recordingStartDate: Date?
     private var recordingTimer: Timer?
+    @ObservationIgnored private var recordingActivity: NSObjectProtocol?
+    private var nextStorageCheck: TimeInterval = 0
+    var automaticallyTranscribe = UserDefaults.standard.object(forKey: "dev.ryokuon.autoTranscribe") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(automaticallyTranscribe, forKey: "dev.ryokuon.autoTranscribe") }
+    }
+
+    var hasBackgroundWork: Bool {
+        transcribingSessionID != nil || importingFileName != nil || !exportingSessionIDs.isEmpty || !transcribeQueue.isEmpty
+    }
+
+    @discardableResult
+    func saveNotes(_ session: Session, text: String) -> Bool {
+        persist(session) { $0.notes = text }
+    }
+
+    func addBookmark(to session: Session, at seconds: Double, title: String = "") {
+        guard seconds.isFinite, seconds >= 0, seconds <= session.durationSeconds else { return }
+        persist(session) {
+            $0.bookmarks.append(.init(id: UUID(), seconds: seconds, title: title))
+            $0.bookmarks.sort { $0.seconds < $1.seconds }
+        }
+    }
+
+    func removeBookmark(_ bookmark: Session.Bookmark, from session: Session) {
+        persist(session) { $0.bookmarks.removeAll { $0.id == bookmark.id } }
+    }
+
+    func bookmarkCurrentRecording() {
+        guard currentSession != nil, let capture, let directory = currentDirectory else { return }
+        do {
+            var fresh = try sessionStore.load(from: directory)
+            fresh.bookmarks.append(.init(id: UUID(), seconds: Double(capture.framesWritten) / Double(WAVWriter.sampleRate), title: ""))
+            try sessionStore.save(fresh, in: directory)
+            currentSession = fresh
+        } catch { lastError = t(.errorMetadataSaveFailed, "\(error)") }
+    }
+
+    private func availableStorage() -> Int64? {
+        try? sessionStore.rootDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage
+    }
+
 
     init(sessionStore: SessionStore = SessionStore()) {
         self.sessionStore = sessionStore
@@ -113,6 +163,15 @@ final class AppState {
             lastError = t(.errorRecovered, recovered.count)
         }
         reloadSessions()
+        // A killed transcription remains durable in session.json. Resume only
+        // explicitly queued work; a failed job waits for the user's retry.
+        for session in sessions where session.transcriptionState == .transcribing {
+            persist(session) { $0.transcriptionState = .queued }
+        }
+        transcribeQueue = sessions.filter { $0.transcriptionState == .queued }.map(\.relativePath)
+        if !transcribeQueue.isEmpty {
+            Task { [weak self] in self?.startNextTranscription() }
+        }
         libraryWatcher = AudioLibraryWatcher { [weak self] in
             Task { @MainActor in self?.scheduleLibraryRefresh() }
         }
@@ -134,6 +193,17 @@ final class AppState {
         sessions = snapshot.sessions
         libraryError = snapshot.error
         libraryRevision += 1
+        searchIndexTask?.cancel()
+        let revision = libraryRevision
+        let root = sessionStore.rootDirectory
+        let searchable = snapshot.sessions
+        searchIndexTask = Task {
+            let index = await Task.detached(priority: .utility) {
+                MeetingSearch.index(sessions: searchable, root: root)
+            }.value
+            guard !Task.isCancelled, revision == libraryRevision else { return }
+            meetingSearchIndex = index
+        }
     }
 
     /// Coalesce bursts of filesystem events, then scan away from the UI thread.
@@ -238,6 +308,11 @@ final class AppState {
             return
         }
 
+        if let bytes = availableStorage(), bytes < 256 * 1024 * 1024 {
+            lastError = t(.errorLowStorage)
+            return
+        }
+        stopPlayback()
         var pendingDirectory: URL?
         do {
             let micDeviceUID = selectedMicDeviceUID.isEmpty ? nil : selectedMicDeviceUID
@@ -252,19 +327,23 @@ final class AppState {
             let newWatchdog = SilenceWatchdog()
             newWatchdog.onWarning = { [weak self] meSilent, remoteSilent in
                 Task { @MainActor in
-                    self?.silenceWarning = SilenceWatchdog.message(meSilent: meSilent, remoteSilent: remoteSilent)
+                    guard let self else { return }
+                    self.silenceWarning = (meSilent && remoteSilent) ? self.t(.silenceBoth)
+                        : meSilent ? self.t(.silenceMe) : remoteSilent ? self.t(.silenceRemote) : nil
                 }
             }
 
             newCapture.onError = { [weak self] error in
                 Task { @MainActor in
-                    self?.lastError = self?.t(.errorStopFailed, "\(error)")
+                    guard let self, self.isRecording, self.currentDirectory == directory else { return }
+                    self.stop(automaticallyTranscribe: false)
+                    self.lastError = self.t(.errorStopFailed, "\(error)")
                 }
             }
 
             newCapture.onLevel = { [weak self] me, remote in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.isRecording, self.currentDirectory == directory else { return }
                     self.meLevelDB = me
                     self.remoteLevelDB = remote
                     let now = Date()
@@ -287,6 +366,9 @@ final class AppState {
             isRecording = true
             recordingStartDate = Date()
             recordingElapsed = 0
+            recordingActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a meeting")
+            nextStorageCheck = 10
             startRecordingTimer()
         } catch {
             // Capture never started, so this directory has no completed audio.
@@ -301,16 +383,25 @@ final class AppState {
             Task { @MainActor in
                 guard let self, let start = self.recordingStartDate else { return }
                 self.recordingElapsed = Date().timeIntervalSince(start)
+                if self.recordingElapsed >= self.nextStorageCheck {
+                    self.nextStorageCheck = self.recordingElapsed + 10
+                    if let bytes = self.availableStorage(), bytes < 64 * 1024 * 1024 {
+                        self.stop(automaticallyTranscribe: false)
+                        self.lastError = self.t(.errorLowStorage)
+                    }
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         recordingTimer = timer
     }
 
-    func stop() {
+    func stop(automaticallyTranscribe shouldTranscribe: Bool = true) {
         guard isRecording, let capture, var session = currentSession, let directory = currentDirectory else { return }
         do {
             try capture.stop()
+            // Preserve bookmarks made since capture started.
+            session = try sessionStore.load(from: directory)
             session.state = .finished
             session.durationSeconds = Double(capture.framesWritten) / Double(WAVWriter.sampleRate)
             try sessionStore.save(session, in: directory)
@@ -318,6 +409,8 @@ final class AppState {
             lastError = t(.errorStopFailed, "\(error)")
         }
 
+        if let recordingActivity { ProcessInfo.processInfo.endActivity(recordingActivity) }
+        recordingActivity = nil
         self.capture = nil
         watchdog = nil
         currentDirectory = nil
@@ -330,9 +423,13 @@ final class AppState {
         recordingTimer = nil
         recordingStartDate = nil
         recordingElapsed = 0
+        // Failed finalization leaves recording metadata for header recovery.
+        // Try now as well, so the saved audio can be opened without a restart.
+        sessionStore.recoverCrashedSessions()
         reloadSessions()
+        requestedSelectionPath = session.relativePath + "/" + AudioCapture.fileName
         // Same flow as an imported file: a finished recording goes straight to text.
-        if let finished = sessions.first(where: { $0.relativePath == session.relativePath }), finished.state == .finished {
+        if shouldTranscribe && automaticallyTranscribe, let finished = sessions.first(where: { $0.relativePath == session.relativePath }), finished.state == .finished {
             transcribeSession(finished)
         }
     }
@@ -374,6 +471,10 @@ final class AppState {
                            meGain: Double, remoteGain: Double) {
         stopPlayback()
         do {
+            player.onError = { [weak self] error in
+                self?.lastError = self?.t(.errorPlayFailed, "\(error)")
+                self?.stopPlayback()
+            }
             player.onFinish = { [weak self] in
                 self?.playingAudioPath = nil
                 self?.stopPlaybackTimer()
@@ -422,6 +523,7 @@ final class AppState {
     /// transcription run) picks up the new value; the audio file itself is
     /// never touched.
     func setGains(for session: Session, me: Double, remote: Double) {
+        guard me.isFinite, remote.isFinite, (0...4).contains(me), (0...4).contains(remote) else { return }
         persist(session) { $0.gains = .init(me: me, remote: remote) }
     }
 
@@ -434,6 +536,7 @@ final class AppState {
             change(&updated)
             try sessionStore.save(updated, in: directory)
             if let index = sessions.firstIndex(where: { $0.relativePath == session.relativePath }) { sessions[index] = updated }
+            scheduleLibraryRefresh()
             return true
         } catch {
             lastError = t(.errorMetadataSaveFailed, "\(error)")
@@ -442,7 +545,7 @@ final class AppState {
     }
 
     var canChangeStorageFolder: Bool {
-        !isRecording && transcribingSessionID == nil && importingFileName == nil && exportingSessionIDs.isEmpty
+        !isRecording && !hasBackgroundWork
     }
 
     func canDelete(_ session: Session) -> Bool {
@@ -490,7 +593,7 @@ final class AppState {
 
     /// Refuse the whole selection if a background writer owns any session.
     func delete(_ ids: Set<String>) {
-        let selected = sessions.filter { ids.contains($0.id) }
+        let selected = sessions.filter { ids.contains($0.relativePath) }
         guard selected.allSatisfy({ canDelete($0) }) else {
             lastError = t(.errorOperationBusy)
             return
@@ -521,17 +624,19 @@ final class AppState {
         // call.wav is still being written while recording — nothing to read yet.
         guard session.state != .recording, session.relativePath != transcribingSessionID,
               !exportingSessionIDs.contains(session.relativePath) else { return }
-        var session = session
+        var session = (try? sessionStore.load(from: sessionStore.directory(for: session))) ?? session
         // Picking a language from the menu sticks to the session (session.json)
         // — a later re-run and a queued run both use it.
         if let newLanguage, newLanguage != session.language {
             guard setLanguage(for: session, to: newLanguage) else { return }
             session.language = newLanguage
         }
+        guard persist(session, change: { $0.transcriptionState = .queued; $0.transcriptionError = nil }) else { return }
         guard transcribingSessionID == nil else {
             if !transcribeQueue.contains(session.relativePath) { transcribeQueue.append(session.relativePath) }
             return
         }
+        guard persist(session, change: { $0.transcriptionState = .transcribing }) else { return }
         transcribingSessionID = session.relativePath
         transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
@@ -561,20 +666,22 @@ final class AppState {
                     transcribeProgress = t(.progressConvertingFLAC)
                     _ = try await Task.detached { try FLACConverter.convert(sessionDirectory: directory) }.value
                 }
-                lastError = nil
+                persist(session) { $0.transcriptionState = .completed; $0.transcriptionError = nil }
             } catch {
+                persist(session) { $0.transcriptionState = .failed; $0.transcriptionError = error.localizedDescription }
                 lastError = t(.errorTranscribeFailed, "\(error)")
             }
             transcribingSessionID = nil
             transcribeProgress = nil
             reloadSessions()
-            while !transcribeQueue.isEmpty {
-                let nextID = transcribeQueue.removeFirst()
-                if let next = sessions.first(where: { $0.relativePath == nextID }) { // skip ones deleted while waiting
-                    transcribeSession(next)
-                    break
-                }
-            }
+            startNextTranscription()
+        }
+    }
+
+    private func startNextTranscription() {
+        while transcribingSessionID == nil, !transcribeQueue.isEmpty {
+            let nextPath = transcribeQueue.removeFirst()
+            if let next = sessions.first(where: { $0.relativePath == nextPath }) { transcribeSession(next) }
         }
     }
 
@@ -646,7 +753,8 @@ final class AppState {
                         try AudioImporter.importFile(item.url, store: SessionStore(rootDirectory: root), language: item.language)
                     }.value
                     reloadSessions()
-                    transcribeSession(session)
+                    requestedSelectionPath = session.relativePath + "/" + AudioCapture.fileName
+                    if automaticallyTranscribe { transcribeSession(session) }
                 } catch {
                     lastError = t(.errorImportFailed, "\(item.url.lastPathComponent): \(error)")
                 }
@@ -690,14 +798,17 @@ final class AppState {
                 written.append(mp3URL)
             }
             if markdown {
+                let latest = try sessionStore.load(from: directory)
                 let text = try String(contentsOf: directory.appendingPathComponent("transcript.txt"), encoding: .utf8)
                 let md = TranscriptBuilder.markdown(
                     TranscriptBuilder.parse(text), title: session.displayName, createdAt: session.createdAt,
                     durationSeconds: session.durationSeconds, language: session.language,
                     rangeMs: isFull ? nil : Int(range.lowerBound * 1000) ... Int(range.upperBound * 1000)
                 )
+                let additions = MeetingMarkdown.appendix(notes: latest.notes, bookmarks: latest.bookmarks,
+                    range: isFull ? nil : range)
                 let mdURL = base.appendingPathExtension("md")
-                try md.write(to: mdURL, atomically: true, encoding: .utf8)
+                try (md + additions).write(to: mdURL, atomically: true, encoding: .utf8)
                 written.append(mdURL)
             }
             lastError = nil

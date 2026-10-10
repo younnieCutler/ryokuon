@@ -109,3 +109,62 @@ private func wavInfo(_ url: URL) throws -> (frameCount: Int, sampleRate: UInt32)
     let dataBytes = readUInt32LE(data, at: 40)
     return (Int(dataBytes) / 2, sampleRate)
 }
+
+struct WAVWriterSafetyTests {
+    @Test func recoveryDoesNotFollowASymbolicLink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let original = root.appendingPathComponent("original.wav")
+        let link = root.appendingPathComponent("call.wav")
+        var bytes = WAVWriter.header(dataBytes: 0)
+        bytes.append(contentsOf: [1, 0, 2, 0])
+        try bytes.write(to: original)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
+        #expect(throws: (any Error).self) { try WAVWriter.repairHeader(at: link) }
+        #expect(try Data(contentsOf: original) == bytes)
+    }
+
+    @Test func existingAudioCannotBeOverwritten() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let original = Data("valuable audio".utf8)
+        try original.write(to: url)
+        #expect(throws: (any Error).self) { _ = try WAVWriter(url: url) }
+        #expect(try Data(contentsOf: url) == original)
+    }
+
+    @Test func rejectsIncompleteStereoFramesAndClosedWrites() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let writer = try WAVWriter(url: url, channels: 2)
+        #expect(throws: WAVWriterError.self) { try writer.append([1]) }
+        try writer.append([1, 2])
+        try writer.finish()
+        try writer.finish()
+        #expect(throws: WAVWriterError.self) { try writer.append([3, 4]) }
+        #expect(try Data(contentsOf: url).count == 48)
+    }
+
+    @Test func recoveryDiscardsOnlyAnIncompleteTail() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var original = WAVWriter.header(dataBytes: 0, channels: 2)
+        original.append(contentsOf: [1, 0, 2, 0, 3])
+        try original.write(to: url)
+        try WAVWriter.repairHeader(at: url, channels: 2)
+        let repaired = try Data(contentsOf: url)
+        #expect(repaired.count == 48)
+        #expect(Array(repaired.suffix(4)) == [1, 0, 2, 0])
+        #expect(readUInt32LE(repaired, at: 40) == 4)
+    }
+
+    @Test func recoveryNeverRewritesAnUnknownFormat() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let original = Data(repeating: 7, count: 100)
+        try original.write(to: url)
+        #expect(throws: WAVWriterError.self) { try WAVWriter.repairHeader(at: url) }
+        #expect(try Data(contentsOf: url) == original)
+    }
+}

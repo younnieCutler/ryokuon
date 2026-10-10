@@ -3,16 +3,16 @@ import SwiftUI
 
 struct MainWindowView: View {
     let appState: AppState
+    @AppStorage("dev.ryokuon.hasOpenedLibrary") private var hasOpenedLibrary = false
+    @State private var showingPermissions = false
 
     var body: some View {
-        Group {
-            if appState.permissions.allGranted {
-                RyokuonSplitView(appState: appState)
-            } else {
-                OnboardingView(appState: appState)
-            }
+        RyokuonSplitView(appState: appState)
+        .onAppear {
+            if !hasOpenedLibrary { showingPermissions = !appState.permissions.allGranted; hasOpenedLibrary = true }
         }
-        .frame(minWidth: 520, minHeight: 380)
+        .sheet(isPresented: $showingPermissions) { OnboardingView(appState: appState) }
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 520, maxHeight: .infinity)
     }
 }
 
@@ -22,6 +22,7 @@ struct MainWindowView: View {
 /// the system prompt appears.
 struct OnboardingView: View {
     let appState: AppState
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.lg) {
@@ -66,9 +67,15 @@ struct OnboardingView: View {
             }
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
+            Label(appState.t(.privacyLocal), systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
+            Button(appState.t(.openPrivacySettings)) {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+            }
             Spacer()
+            Button(appState.t(.useLibrary)) { dismiss() }.keyboardShortcut(.defaultAction)
         }
         .padding(RTheme.Spacing.xl)
+        .frame(minWidth: 440, minHeight: 400)
     }
 
     private func statusText(for status: PermissionsManager.Status) -> String {
@@ -125,8 +132,7 @@ struct RyokuonSplitView: View {
     @State private var wasAutoCollapsed = false
 
     var body: some View {
-        GeometryReader { geometry in
-            NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
                 SessionSidebar(appState: appState, selection: $selection, isEditing: $isEditing)
                     .navigationSplitViewColumnWidth(min: 190, ideal: 260, max: 340)
             } detail: {
@@ -152,13 +158,39 @@ struct RyokuonSplitView: View {
             }
             .onAppear {
                 appState.reloadSessions()
-                adjustColumns(for: geometry.size.width)
+                if let remembered = UserDefaults.standard.string(forKey: "dev.ryokuon.lastSelectedAudioPath") {
+                    let prefix = appState.sessionStore.rootDirectory.path + "/"
+                    if remembered.hasPrefix(prefix) {
+                        let relative = String(remembered.dropFirst(prefix.count))
+                        if appState.audioNode(at: relative) != nil { selection = relative }
+                    }
+                }
             }
-            .onChange(of: geometry.size.width) { _, width in adjustColumns(for: width) }
+            .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.width } action: { width in
+                adjustColumns(for: width)
+            }
             .onChange(of: appState.libraryRevision) { _, _ in
-                if let selection, appState.audioNode(at: selection) == nil { self.selection = nil }
+                if let selection, appState.audioNode(at: selection) == nil {
+                    // Verified FLAC conversion changes call.wav to call.flac.
+                    // Keep the same meeting open instead of losing selection.
+                    let parent = (selection as NSString).deletingLastPathComponent
+                    if let session = appState.sessions.first(where: { $0.relativePath == parent }),
+                       let audio = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session)) {
+                        self.selection = parent + "/" + audio.lastPathComponent
+                    } else { self.selection = nil }
+                }
+            }
+            .onChange(of: appState.requestedSelectionPath) { _, path in
+                if let path, appState.audioNode(at: path) != nil { selection = path }
+            }
+            .onChange(of: selection) { _, path in
+                if let path {
+                    UserDefaults.standard.set(appState.sessionStore.rootDirectory.appendingPathComponent(path).path,
+                                              forKey: "dev.ryokuon.lastSelectedAudioPath")
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                appState.permissions.refreshMicrophoneStatus()
                 appState.refreshLibrary()
             }
             .toolbar {
@@ -168,6 +200,7 @@ struct RyokuonSplitView: View {
                             .labelStyle(.iconOnly)
                     }
                     .help(appState.t(.importHelp))
+                    .keyboardShortcut("i", modifiers: .command)
                 }
                 ToolbarSpacer(.fixed)
                 ToolbarItem {
@@ -180,7 +213,6 @@ struct RyokuonSplitView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsSheetView(appState: appState)
             }
-        }
     }
 
     private func adjustColumns(for width: CGFloat) {
@@ -215,9 +247,8 @@ private struct SessionSidebar: View {
         guard !searchText.isEmpty else { return appState.libraryNodes }
         func filtered(_ nodes: [AudioLibraryNode]) -> [AudioLibraryNode] {
             nodes.compactMap { node in
-                let matches = node.name.localizedCaseInsensitiveContains(searchText)
-                    || (node.isFolder && appState.sessions.first { $0.relativePath == node.relativePath }?
-                        .displayName.localizedCaseInsensitiveContains(searchText) == true)
+                let matches = node.name.localizedStandardContains(searchText)
+                    || (node.isFolder && appState.matchesMeeting(node.relativePath, query: searchText))
                 if matches { return node }
                 let children = filtered(node.children)
                 return node.isFolder && !children.isEmpty ? node.replacingChildren(children) : nil
@@ -297,6 +328,7 @@ private struct SessionSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .frame(minHeight: 0, maxHeight: .infinity)
                 .searchable(text: $searchText, placement: .sidebar, prompt: appState.t(.searchPlaceholder))
             }
             if isEditing && !selectedIDs.isEmpty {
@@ -333,7 +365,10 @@ private struct SessionSidebar: View {
             }
             Divider()
             RecordingControlBar(appState: appState)
+                .frame(height: appState.isRecording ? 240 : 300, alignment: .top)
         }
+        .onAppear { expandSelection() }
+        .onChange(of: selection) { _, _ in expandSelection() }
         .onChange(of: isEditing) { _, newValue in if !newValue { selectedIDs.removeAll() } }
         .dropDestination(for: URL.self) { urls, _ in
             let audio = urls.filter { AudioLibraryScanner.audioExtensions.contains($0.pathExtension.lowercased()) }
@@ -370,6 +405,12 @@ private struct SessionSidebar: View {
         } message: {
             Text(appState.t(.deleteConfirmMessage))
         }
+    }
+
+    private func expandSelection() {
+        guard let selection else { return }
+        let parts = selection.split(separator: "/")
+        for length in 1..<parts.count { expandedFolders.insert(parts.prefix(length).joined(separator: "/")) }
     }
 
     private func toggleSelection(_ id: String) {
@@ -509,6 +550,7 @@ struct RecordingControlBar: View {
     let appState: AppState
     /// The app picked in the idle picker; nil = last recorded app, else the first playing one.
     @State private var selectedBundleID: String?
+    @State private var showingPermissions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: RTheme.Spacing.sm) {
@@ -535,6 +577,9 @@ struct RecordingControlBar: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                Button { appState.bookmarkCurrentRecording() } label: {
+                    Label(appState.t(.addBookmark), systemImage: "bookmark.badge.plus")
+                }
                 Button(role: .destructive) {
                     appState.stop()
                 } label: {
@@ -560,6 +605,7 @@ struct RecordingControlBar: View {
             }
         }
         .padding(RTheme.Spacing.md)
+        .sheet(isPresented: $showingPermissions) { OnboardingView(appState: appState) }
     }
 
     /// Always one big, obvious start button (it used to be a dropdown on
@@ -588,6 +634,11 @@ struct RecordingControlBar: View {
                 }
                 .menuStyle(.borderlessButton)
             }
+            if !appState.permissions.allGranted {
+                Button(appState.t(.setupRecording)) { showingPermissions = true }
+            }
+            Text(appState.t(.recordingConsent)).font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 if let target { appState.start(target: target) }
             } label: {
@@ -598,7 +649,7 @@ struct RecordingControlBar: View {
             .buttonStyle(.borderedProminent)
             .tint(.red)
             .controlSize(.large)
-            .disabled(target == nil)
+            .disabled(target == nil || !appState.permissions.allGranted)
 
             if target == nil {
                 Text(appState.t(.noSoundApps))
@@ -773,6 +824,12 @@ struct SettingsSheetView: View {
                     }
                 }
 
+                Section {
+                    Toggle(appState.t(.autoTranscribe), isOn: Binding(
+                        get: { appState.automaticallyTranscribe }, set: { appState.automaticallyTranscribe = $0 }))
+                    Text(appState.t(.privacyLocal)).font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section(appState.t(.settingsUpdates)) {
                     LabeledContent(appState.t(.updateCurrentVersion)) {
                         Text(updater.currentVersion)
@@ -837,6 +894,7 @@ struct SessionDetailPane: View {
     @State private var displayName: String
     @State private var query = ""
     @State private var showingExport = false
+    @State private var showingNotes = false
     /// transcript.txt exists — with `lines` empty this means a run finished
     /// but found no speech (nearly always the wrong language).
     @State private var hasTranscriptFile = false
@@ -870,6 +928,11 @@ struct SessionDetailPane: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let error = session.transcriptionError, session.transcriptionState == .failed {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).padding(8)
+            }
+            MeetingBookmarksView(appState: appState, session: session)
             Divider()
 
             if lines.isEmpty {
@@ -881,8 +944,12 @@ struct SessionDetailPane: View {
                             .id(line.id)
                             .contentShape(Rectangle())
                             .onTapGesture { appState.seekPlayback(session, toSeconds: line.startSeconds) }
+                            .accessibilityAction(named: Text(appState.t(.sessionPlay))) {
+                                appState.seekPlayback(session, toSeconds: line.startSeconds)
+                            }
                     }
                     .listStyle(.plain)
+                    .frame(minHeight: 0, maxHeight: .infinity)
                     .searchable(text: $query, prompt: appState.t(.searchPlaceholder))
                     .onChange(of: currentLineID) { _, newValue in
                         guard let newValue else { return }
@@ -893,7 +960,9 @@ struct SessionDetailPane: View {
 
             Divider()
             CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
+                .frame(height: session.channels == 2 ? 100 : 60)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { loadTranscript() }
         .onChange(of: appState.transcribingSessionID) { oldValue, _ in
             if oldValue == session.relativePath { loadTranscript() }
@@ -910,6 +979,12 @@ struct SessionDetailPane: View {
         .navigationTitle($displayName)
         .onChange(of: displayName) { _, newValue in appState.rename(session, to: newValue) }
         .toolbar {
+            ToolbarItem {
+                Button { showingNotes = true } label: {
+                    Label(appState.t(.meetingNotes), systemImage: "note.text")
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
             // Exactly one prominent button: the next step. No text yet ->
             // convert; text exists -> export. The other stays plain.
             ToolbarItem {
@@ -929,6 +1004,7 @@ struct SessionDetailPane: View {
                 .help(appState.t(.exportHelp))
             }
         }
+        .sheet(isPresented: $showingNotes) { MeetingNotesSheet(appState: appState, session: session) }
         .sheet(isPresented: $showingExport) {
             ExportSheet(appState: appState, session: session, utteranceStarts: lines.map(\.startSeconds))
         }
@@ -1247,8 +1323,9 @@ private struct GainControl: View {
 
     var body: some View {
         HStack(spacing: RTheme.Spacing.xs) {
-            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 32, alignment: .leading)
-            Slider(value: $value, in: 0.25 ... 3.0, step: 0.05) { editing in
+            Text(label).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).frame(width: 52, alignment: .leading)
+            Slider(value: $value, in: 0.25 ... 3.0) { editing in
                 if !editing { onChange() }
             }
             .tint(tint)

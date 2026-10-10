@@ -1,80 +1,80 @@
-#!/bin/bash
-# Ryokuon installer:
-#   curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/younnieCutler/ryokuon/main/install.sh | bash -s -- --uninstall
-#
-# Why a script instead of a DMG: Gatekeeper only vets files carrying the
-# com.apple.quarantine flag, which browsers add and curl doesn't — so a
-# curl-installed app opens without notarization prompts.
+#!/usr/bin/env bash
+# Optional installer for notarized releases. Gatekeeper remains enabled.
+# The maintainer's verified 10-character Apple Team ID must be supplied.
 set -euo pipefail
-
-APP_NAME="Ryokuon"
-BUNDLE_ID="dev.ryokuon.app"
+APP_NAME=Ryokuon
+BUNDLE_ID=dev.ryokuon.app
 URL="${RYOKUON_URL:-https://github.com/younnieCutler/ryokuon/releases/latest/download/Ryokuon.zip}"
-
-say() { printf '\033[1m==>\033[0m %s\n' "$1"; }
-die() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
-
-# Quitting mid-recording would cut the recording short — refuse instead.
-ensure_not_recording() {
-    pgrep -x "$APP_NAME" >/dev/null || return 0
-    local root
-    root="$(defaults read "$BUNDLE_ID" dev.ryokuon.storageRootPath 2>/dev/null || echo "$HOME/Documents/ryokuon")"
-    while IFS= read -r -d '' session; do
-        if grep -q '"state" : "recording"' "$session"; then
-            die "$APP_NAME is recording right now — stop the recording, then run this again."
-        fi
-    done < <(find "$root" -type f -name session.json -print0 2>/dev/null)
-    say "Quitting the running $APP_NAME"
-    pkill -TERM -x "$APP_NAME" || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x "$APP_NAME" >/dev/null || return 0; sleep 0.5; done
-    die "$APP_NAME didn't quit — quit it manually and run this again."
+say() { printf '==> %s\n' "$1"; }
+die() { printf 'error: %s\n' "$1" >&2; exit 1; }
+ensure_not_running() {
+    if pgrep -x "$APP_NAME" >/dev/null; then
+        die 'Quit Ryokuon normally before installing or uninstalling. Running recordings and conversions are left untouched.'
+    fi
 }
-
+verify_app() {
+    local app="$1" actual_team
+    [[ -d "$app" && ! -L "$app" ]] || die 'invalid application bundle'
+    codesign --verify --deep --strict "$app" || die 'invalid code signature'
+    actual_team="$(codesign -dv --verbose=4 "$app" 2>&1 | awk -F= '$1 == "TeamIdentifier" { print $2 }')"
+    [[ "$actual_team" == "$RYOKUON_TEAM_ID" ]] || die 'publisher Team ID mismatch'
+    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" == "$BUNDLE_ID" ]] || die 'bundle ID mismatch'
+    xcrun stapler validate "$app" || die 'missing or invalid notarization ticket'
+    spctl --assess --type execute "$app" || die 'Gatekeeper rejected this app'
+}
+cleanup() {
+    local status=$?
+    if [[ "$status" -ne 0 && -n "${backup:-}" && -d "$backup" ]]; then
+        [[ ! -e "$destination" ]] || rm -rf -- "$destination"
+        mv "$backup" "$destination"
+        say 'Installation failed; the previous app was restored.'
+    fi
+    [[ -z "${staging:-}" ]] || rm -rf -- "$staging"
+    [[ -z "${download:-}" ]] || rm -rf -- "$download"
+    exit "$status"
+}
 uninstall() {
-    ensure_not_recording
-    for dir in /Applications "$HOME/Applications"; do
-        if [ -d "$dir/$APP_NAME.app" ]; then
-            say "Removing $dir/$APP_NAME.app"
-            rm -rf "${dir:?}/$APP_NAME.app"
-        fi
+    ensure_not_running
+    for parent in /Applications "$HOME/Applications"; do
+        [[ ! -L "$parent/$APP_NAME.app" ]] || die 'refusing a symlinked app'
+        if [[ -d "$parent/$APP_NAME.app" ]]; then rm -rf -- "$parent/$APP_NAME.app"; fi
     done
-    say "Removing settings and privacy permissions"
     defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
     tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true
-    say "Done. Recordings were kept in ~/Documents/ryokuon (delete that folder yourself if you want them gone)."
+    say 'App and settings removed. All recording folders were kept.'
 }
-
 install() {
-    [ "$(uname -m)" = "arm64" ] || die "$APP_NAME needs an Apple silicon Mac."
-    [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ] || die "$APP_NAME needs macOS 26 or later."
-
-    local dest=/Applications
-    [ -w "$dest" ] || dest="$HOME/Applications"
-    mkdir -p "$dest"
-
-    # Global, not `local`: the EXIT trap runs after this function returns.
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-
-    say "Downloading $APP_NAME"
-    curl -fL --progress-bar "$URL" -o "$tmp/$APP_NAME.zip" || die "download failed: $URL"
-    ditto -x -k "$tmp/$APP_NAME.zip" "$tmp"
-    [ -d "$tmp/$APP_NAME.app" ] || die "the download didn't contain $APP_NAME.app"
-    codesign --verify --deep --strict "$tmp/$APP_NAME.app" 2>/dev/null || die "signature check failed — download corrupted?"
-
-    ensure_not_recording
-    say "Installing to $dest/$APP_NAME.app"
-    rm -rf "${dest:?}/$APP_NAME.app"
-    ditto "$tmp/$APP_NAME.app" "$dest/$APP_NAME.app"
-    xattr -dr com.apple.quarantine "$dest/$APP_NAME.app" 2>/dev/null || true
-
-    say "Opening $APP_NAME — allow the microphone and audio permissions it asks for."
-    open "$dest/$APP_NAME.app"
+    [[ "$(uname -m)" == arm64 ]] || die 'Ryokuon needs Apple silicon.'
+    [[ "$(sw_vers -productVersion | cut -d. -f1)" -ge 26 ]] || die 'Ryokuon needs macOS 26 or later.'
+    [[ "${RYOKUON_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] || die 'Set RYOKUON_TEAM_ID to the verified publisher Team ID from the release notes.'
+    [[ "$URL" == https://github.com/younnieCutler/ryokuon/releases/*/Ryokuon.zip ]] || die 'unsupported release URL'
+    ensure_not_running
+    local parent=/Applications
+    [[ -w "$parent" ]] || parent="$HOME/Applications"
+    mkdir -p "$parent"
+    destination="$parent/$APP_NAME.app"
+    [[ ! -L "$destination" ]] || die 'refusing a symlinked app'
+    download="$(mktemp -d)"
+    staging="$(mktemp -d "$parent/.Ryokuon-install.XXXXXX")"
+    trap cleanup EXIT
+    say 'Downloading the release'
+    curl --proto '=https' --tlsv1.2 -fL --progress-bar "$URL" -o "$download/Ryokuon.zip"
+    ditto -x -k "$download/Ryokuon.zip" "$download/unpacked"
+    verify_app "$download/unpacked/Ryokuon.app"
+    ditto "$download/unpacked/Ryokuon.app" "$staging/Ryokuon.app"
+    verify_app "$staging/Ryokuon.app"
+    ensure_not_running
+    if [[ -d "$destination" ]]; then
+        backup="$staging/previous.app"
+        mv "$destination" "$backup"
+    fi
+    mv "$staging/Ryokuon.app" "$destination"
+    verify_app "$destination"
+    open "$destination"
+    say 'Installed Ryokuon. Your recordings and settings were preserved.'
 }
-
 case "${1:-}" in
     --uninstall) uninstall ;;
-    "") install ;;
-    *) die "unknown option: $1 (use --uninstall, or nothing to install)" ;;
+    '') install ;;
+    *) die 'Use --uninstall or no arguments.' ;;
 esac

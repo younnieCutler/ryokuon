@@ -8,7 +8,16 @@ struct RyokuonApp: App {
         Window("Ryokuon", id: "main") {
             MainWindowView(appState: appDelegate.appState)
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 1040, height: 720)
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button(appDelegate.appState.t(.importButton)) { appDelegate.appState.presentImportPanel() }
+                    .keyboardShortcut("i", modifiers: .command)
+                Button(appDelegate.appState.t(.addBookmark)) { appDelegate.appState.bookmarkCurrentRecording() }
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                    .disabled(!appDelegate.appState.isRecording)
+            }
+        }
     }
 }
 
@@ -25,12 +34,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory) // menu bar utility, no Dock icon
+        NSApp.setActivationPolicy(.regular)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = Self.statusImage(symbol: "waveform")
+        item.button?.toolTip = "Ryokuon"
         item.menu = buildMenu()
         statusItem = item
+        if ProcessInfo.processInfo.environment["RYOKUON_UI_DIAGNOSTICS"] == "1" {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                NSApp.activate(ignoringOtherApps: true)
+                for window in NSApp.windows where window.frame.width > 500 {
+                    window.makeKeyAndOrderFront(nil)
+                }
+                for window in NSApp.windows {
+                    print("Window: \(window.frame), content: \(window.contentLayoutRect)")
+                    if let view = window.contentView { Self.traceView(view, depth: 0) }
+                }
+                fflush(stdout)
+                try? await Task.sleep(for: .seconds(9))
+                if let window = NSApp.windows.first(where: { $0.contentView != nil && $0.frame.width > 500 }) {
+                    window.setContentSize(NSSize(width: 620, height: 560))
+                    window.center()
+                    print("Narrow-window visual check: \(window.frame)")
+                    fflush(stdout)
+                }
+            }
+        }
 
         withObservationTracking {
             _ = appState.isRecording
@@ -41,6 +74,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
+    }
+
+    private static func traceView(_ view: NSView, depth: Int) {
+        guard depth < 8 else { return }
+        print("\(String(repeating: " ", count: depth))\(type(of: view)): \(view.frame)")
+        for child in view.subviews { traceView(child, depth: depth + 1) }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if appState.importingFileName != nil || !appState.exportingSessionIDs.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = appState.t(.quitBusyTitle)
+            alert.informativeText = appState.t(.quitBusyHint)
+            alert.addButton(withTitle: appState.t(.confirmButton))
+            alert.runModal()
+            return .terminateCancel
+        }
+        if appState.isRecording {
+            let alert = NSAlert()
+            alert.messageText = appState.t(.quitRecordingTitle)
+            alert.informativeText = appState.t(.quitRecordingHint)
+            alert.addButton(withTitle: appState.t(.cancelButton))
+            alert.addButton(withTitle: appState.t(.quitSave))
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+            appState.stop(automaticallyTranscribe: false)
+        }
+        return .terminateNow
+    }
+
+    @objc private func willSleep() {
+        guard appState.isRecording else { return }
+        appState.stop(automaticallyTranscribe: false)
+        appState.lastError = appState.t(.errorSleepStopped)
     }
 
     private func refreshStatusItem() {
