@@ -12,7 +12,7 @@ struct MainWindowView: View {
             if !hasOpenedLibrary { showingPermissions = !appState.permissions.allGranted; hasOpenedLibrary = true }
         }
         .sheet(isPresented: $showingPermissions) { OnboardingView(appState: appState) }
-        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 380, maxHeight: .infinity)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 520, maxHeight: .infinity)
     }
 }
 
@@ -1323,8 +1323,9 @@ private struct GainControl: View {
 
     var body: some View {
         HStack(spacing: RTheme.Spacing.xs) {
-            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 32, alignment: .leading)
-            Slider(value: $value, in: 0.25 ... 3.0, step: 0.05) { editing in
+            Text(label).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).frame(width: 52, alignment: .leading)
+            Slider(value: $value, in: 0.25 ... 3.0) { editing in
                 if !editing { onChange() }
             }
             .tint(tint)

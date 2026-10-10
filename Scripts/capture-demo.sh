@@ -19,8 +19,9 @@ with wave.open(str(session/'call.wav'),'wb') as f:
 PY
 session="$fixture/Launch planning/2026-10-10_0930/call.wav"
 mkdir -p "$ROOT/.build/visual-evidence"
-"$ROOT/.build/Ryokuon.app/Contents/Helpers/lame" --quiet -b 64 "$session" "$fixture/bundled-export.mp3"
-afinfo "$fixture/bundled-export.mp3" > "$ROOT/.build/visual-evidence/bundled-mp3.txt"
+"$ROOT/.build/Ryokuon.app/Contents/Helpers/lame" --quiet -b 64 "$session" "$ROOT/.build/visual-evidence/bundled-export.mp3"
+afinfo "$ROOT/.build/visual-evidence/bundled-export.mp3" > "$ROOT/.build/visual-evidence/bundled-mp3.txt"
+rm "$ROOT/.build/visual-evidence/bundled-export.mp3"
 defaults write dev.ryokuon.app dev.ryokuon.storageRootPath -string "$fixture"
 defaults write dev.ryokuon.app dev.ryokuon.lastSelectedAudioPath -string "$session"
 defaults write dev.ryokuon.app dev.ryokuon.hasOpenedLibrary -bool true
@@ -29,5 +30,9 @@ mkdir -p "$ROOT/.build/visual-evidence"
 RYOKUON_UI_DIAGNOSTICS=1 "$ROOT/.build/Ryokuon.app/Contents/MacOS/Ryokuon" > "$ROOT/.build/visual-evidence/app.log" 2>&1 &
 sleep 8
 pgrep -x Ryokuon >/dev/null
+open -a "$ROOT/.build/Ryokuon.app"
+sleep 1
 mkdir -p "$ROOT/.build/visual-evidence"
 screencapture -x "$ROOT/.build/visual-evidence/meeting-workspace.png"
+sleep 6
+screencapture -x "$ROOT/.build/visual-evidence/narrow-workspace.png"
