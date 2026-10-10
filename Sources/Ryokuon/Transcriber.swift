@@ -50,6 +50,7 @@ enum Transcriber {
         let probe = try readProbe(callURL, seconds: 30)
         var best = (id: candidateLocales[0], score: -1.0)
         for id in candidateLocales {
+            try Task.checkCancellation()
             guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: id))
             else { continue }
             let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
@@ -76,6 +77,7 @@ enum Transcriber {
     static func transcribe(sessionDirectory: URL, locale localeID: String,
                             meGain: Double = 1.0, remoteGain: Double = 1.0,
                             onProgress: (@Sendable (String) -> Void)? = nil) async throws -> [TranscriptWord] {
+        try Task.checkCancellation()
         let wanted = Locale(identifier: localeID)
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) else {
             throw TranscriberError.unsupportedLocale(localeID)
@@ -108,17 +110,23 @@ enum Transcriber {
             words = (meWords + remoteWords).sorted { $0.startMs < $1.startMs }
         }
 
+        try Task.checkCancellation()
         let data = try JSONEncoder().encode(words)
         try data.write(to: sessionDirectory.appendingPathComponent("raw.json"), options: .atomic)
         return words
     }
 
     private static func ensureInstalled(modules: [any SpeechModule], onProgress: (@Sendable (String) -> Void)?) async throws {
+        try Task.checkCancellation()
         let status = await AssetInventory.status(forModules: modules)
         guard status != .installed else { return }
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: modules) else { return }
         onProgress?("downloading speech model (\(Int(request.progress.fractionCompleted * 100))%)")
-        try await request.downloadAndInstall()
+        let installationProgress = request.progress
+        try await withTaskCancellationHandler {
+            try await request.downloadAndInstall()
+            try Task.checkCancellation()
+        } onCancel: { installationProgress.cancel() }
     }
 
     /// Up to `seconds` from the middle of the recording, all channels mixed
@@ -166,9 +174,17 @@ enum Transcriber {
             try Task.checkCancellation()
             return try reader.next().map { AnalyzerInput(buffer: $0) }
         })
-        _ = try await analyzer.analyzeSequence(stream)
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        return try await collector.value
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            _ = try await analyzer.analyzeSequence(stream)
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            let words = try await collector.value
+            try Task.checkCancellation()
+            return words
+        } onCancel: {
+            collector.cancel()
+            Task { await analyzer.cancelAndFinishNow() }
+        }
     }
 
     private static func run(_ transcriber: SpeechTranscriber, buffer: AVAudioPCMBuffer,
@@ -204,9 +220,17 @@ enum Transcriber {
             continuation.finish()
         }
 
-        _ = try await analyzer.analyzeSequence(stream)
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        return try await collector.value
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            _ = try await analyzer.analyzeSequence(stream)
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            let words = try await collector.value
+            try Task.checkCancellation()
+            return words
+        } onCancel: {
+            collector.cancel()
+            Task { await analyzer.cancelAndFinishNow() }
+        }
     }
 
     private static func extractWords(_ result: SpeechTranscriber.Result, speaker: String) -> [TranscriptWord] {

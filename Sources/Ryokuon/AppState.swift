@@ -16,6 +16,10 @@ final class AppState {
     var selectedRecordingProcessID: pid_t?
     var isShowingPermissionSetup = false
     var isShowingSettings = false
+    typealias TranscribeOperation = @Sendable (URL, String, Double, Double, @escaping @Sendable (String) -> Void) async throws -> [TranscriptWord]
+    @ObservationIgnored private let transcribeOperation: TranscribeOperation
+    @ObservationIgnored private var transcriptionTask: Task<Void, Never>?
+    private(set) var isCancellingTranscription = false
     @ObservationIgnored private let trashSession: (Session) throws -> Void
 
     private(set) var isRecording = false
@@ -107,7 +111,12 @@ final class AppState {
     private var recordingStartDate: Date?
     private var recordingTimer: Timer?
 
-    init(sessionStore: SessionStore = SessionStore(), trashSession: ((Session) throws -> Void)? = nil) {
+    init(sessionStore: SessionStore = SessionStore(), trashSession: ((Session) throws -> Void)? = nil,
+         transcribeOperation: @escaping TranscribeOperation = { directory, locale, me, remote, progress in
+             try await Transcriber.transcribe(sessionDirectory: directory, locale: locale,
+                                              meGain: me, remoteGain: remote, onProgress: progress)
+         }) {
+        self.transcribeOperation = transcribeOperation
         self.sessionStore = sessionStore
         self.trashSession = trashSession ?? { try sessionStore.trash($0) }
         // Q11: repair anything a crash left behind before the user can see
@@ -609,6 +618,13 @@ final class AppState {
     private(set) var transcribingSessionID: String?
     private(set) var transcribeProgress: String?
 
+    func cancelTranscription(_ session: Session) {
+        guard transcribingSessionID == session.relativePath, !isCancellingTranscription else { return }
+        isCancellingTranscription = true
+        transcribeProgress = t(.progressCancelling)
+        transcriptionTask?.cancel()
+    }
+
     /// Runs the full post-recording pipeline a session needs before it's
     /// actually useful: word-level STT (step 3) -> merged transcript.txt
     /// (step 4) -> FLAC conversion + original deletion (step 5, Q3). Steps
@@ -630,38 +646,51 @@ final class AppState {
             return
         }
         transcribingSessionID = session.relativePath
+        isCancellingTranscription = false
         transcribeProgress = t(.progressStarting)
         let directory = sessionStore.directory(for: session)
+        let sessionID = session.relativePath
 
-        Task {
+        transcriptionTask = Task {
             do {
+                try Task.checkCancellation()
                 var locale = session.language
                 if locale == Transcriber.autoLanguage {
                     transcribeProgress = t(.progressDetectingLanguage)
                     locale = try await Transcriber.detectLanguage(sessionDirectory: directory)
+                    try Task.checkCancellation()
                     // Saved, so the header shows what was detected and ▾ can override it.
                     if let current = sessions.first(where: { $0.relativePath == session.relativePath }) {
                         setLanguage(for: current, to: locale)
                     }
                 }
-                let words = try await Transcriber.transcribe(
-                    sessionDirectory: directory, locale: locale,
-                    meGain: session.gains.me, remoteGain: session.gains.remote
-                ) { [weak self] message in
-                    Task { @MainActor in self?.transcribeProgress = self?.localizedProgress(message) }
+                let words = try await transcribeOperation(directory, locale, session.gains.me, session.gains.remote) { [weak self] message in
+                    Task { @MainActor in
+                        guard let self, self.transcribingSessionID == sessionID,
+                              !self.isCancellingTranscription else { return }
+                        self.transcribeProgress = self.localizedProgress(message)
+                    }
                 }
+                try Task.checkCancellation()
                 let utterances = TranscriptBuilder.build(from: words)
                 try TranscriptBuilder.writeTranscript(
                     utterances, to: directory.appendingPathComponent("transcript.txt")
                 )
                 if FileManager.default.fileExists(atPath: directory.appendingPathComponent(AudioCapture.fileName).path) {
                     transcribeProgress = t(.progressConvertingFLAC)
-                    _ = try await Task.detached { try FLACConverter.convert(sessionDirectory: directory) }.value
+                    let conversion = Task.detached { try FLACConverter.convert(sessionDirectory: directory) }
+                    _ = try await withTaskCancellationHandler {
+                        try await conversion.value
+                    } onCancel: { conversion.cancel() }
                 }
                 lastError = nil
             } catch {
-                lastError = t(.errorTranscribeFailed, "\(error)")
+                if !Task.isCancelled && !(error is CancellationError) {
+                    lastError = t(.errorTranscribeFailed, "\(error)")
+                }
             }
+            transcriptionTask = nil
+            isCancellingTranscription = false
             transcribingSessionID = nil
             transcribeProgress = nil
             reloadSessions()

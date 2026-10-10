@@ -1051,6 +1051,7 @@ struct SessionDetailPane: View {
             // Without text the centered empty state already shows progress.
             if isTranscribingThis, hasText, let progress = appState.transcribeProgress {
                 Text(progress).font(.caption).foregroundStyle(.secondary)
+                cancelTranscriptionButton
             }
         }
         .padding(.horizontal, RTheme.Spacing.lg)
@@ -1084,6 +1085,12 @@ struct SessionDetailPane: View {
     }
 
     @ViewBuilder
+    private var cancelTranscriptionButton: some View {
+        Button(appState.t(.cancelTranscription)) { appState.cancelTranscription(session) }
+            .disabled(appState.isCancellingTranscription)
+    }
+
+    @ViewBuilder
     private var emptyTranscriptState: some View {
         if isTranscribingThis || isQueued {
             VStack(spacing: RTheme.Spacing.md) {
@@ -1093,6 +1100,7 @@ struct SessionDetailPane: View {
                 if isTranscribingThis, let progress = appState.transcribeProgress {
                     Text(progress).font(.callout).foregroundStyle(.secondary).monospacedDigit()
                 }
+                if isTranscribingThis { cancelTranscriptionButton }
                 if isQueued {
                     Button(appState.t(.cancelQueued)) { appState.cancelQueuedTranscription(session) }
                 }

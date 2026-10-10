@@ -5,6 +5,30 @@ import Testing
 @testable import Ryokuon
 
 struct FLACConverterTests {
+    @Test func cancelledConversionPreservesSourceAndExistingDestination() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let wav = directory.appendingPathComponent("call.wav")
+        let writer = try WAVWriter(url: wav)
+        try writer.append([Int16](repeating: 1000, count: 16000))
+        try writer.finish()
+        let original = try Data(contentsOf: wav)
+        let flac = directory.appendingPathComponent("call.flac")
+        try Data("previous".utf8).write(to: flac)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try FLACConverter.convert(sessionDirectory: directory)
+        }
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled conversion unexpectedly succeeded")
+        } catch is CancellationError { }
+        #expect(try Data(contentsOf: wav) == original)
+        #expect(try Data(contentsOf: flac) == Data("previous".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == 2)
+    }
+
     @Test func conversionPreservesEveryFrameBeforeRemovingWAV() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

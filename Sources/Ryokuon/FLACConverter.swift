@@ -13,6 +13,7 @@ enum FLACConverterError: Error {
 /// can't lose both files.
 enum FLACConverter {
     static func convert(sessionDirectory: URL) throws -> URL {
+        try Task.checkCancellation()
         let wavURL = sessionDirectory.appendingPathComponent(AudioCapture.fileName)
         let flacURL = sessionDirectory.appendingPathComponent("call.flac")
 
@@ -42,6 +43,7 @@ enum FLACConverter {
               verify.processingFormat.channelCount == source.processingFormat.channelCount,
               verify.processingFormat.sampleRate == source.processingFormat.sampleRate
         else { throw FLACConverterError.incompleteConversion }
+        try Task.checkCancellation()
         try AtomicFile.publish(stagedURL, to: flacURL)
 
         try FileManager.default.removeItem(at: wavURL)
@@ -66,6 +68,7 @@ enum FLACConverter {
         guard let readBuffer = AVAudioPCMBuffer(pcmFormat: source.processingFormat, frameCapacity: chunkFrames)
         else { throw FLACConverterError.emptySource }
         while source.framePosition < source.length {
+            try Task.checkCancellation()
             readBuffer.frameLength = 0
             try source.read(into: readBuffer, frameCount: chunkFrames)
             guard readBuffer.frameLength > 0 else { throw FLACConverterError.incompleteConversion }

@@ -53,7 +53,7 @@ enum L10nKey {
     case errorMicSwitchFailed // %@ = error description
     case errorOperationBusy, errorMetadataSaveFailed, errorDeleteFailed
     case errorNoAudioFile
-    case progressStarting, progressConvertingFLAC
+    case progressStarting, progressConvertingFLAC, cancelTranscription, progressCancelling
     case progressMeTrack, progressRemoteTrack, progressDownloadingModel // model: %@ = "42%"
     case statusReady, statusRecording, statusProcessing
     case currentMicLabel, currentAppLabel
@@ -115,6 +115,8 @@ enum Localization {
             .openSystemSettings: "시스템 설정 열기",
             .permissionRecoveryHint: "권한을 거부했다면 시스템 설정의 개인정보 보호 및 보안에서 Ryokuon을 허용한 뒤 다시 돌아오세요.",
             .cancelQueued: "대기 취소",
+            .cancelTranscription: "전사 취소",
+            .progressCancelling: "취소 중…",
             .reportIssue: "문제 보고·기능 제안",
             .privacySummary: "음성과 전사는 이 Mac에 저장됩니다. 음성 모델 다운로드와 업데이트 확인에는 네트워크를 사용합니다.",
             .quitBusyTitle: "진행 중인 작업이 있습니다",
@@ -269,6 +271,8 @@ enum Localization {
             .openSystemSettings: "システム設定を開く",
             .permissionRecoveryHint: "権限を拒否した場合は、システム設定のプライバシーとセキュリティでRyokuonを許可して戻ってください。",
             .cancelQueued: "待機をキャンセル",
+            .cancelTranscription: "文字起こしをキャンセル",
+            .progressCancelling: "キャンセル中…",
             .reportIssue: "不具合報告・機能提案",
             .privacySummary: "音声と文字起こしはこのMacに保存されます。音声モデルのダウンロードと更新確認にはネットワークを使用します。",
             .quitBusyTitle: "処理中の作業があります",
@@ -423,6 +427,8 @@ enum Localization {
             .openSystemSettings: "Open System Settings",
             .permissionRecoveryHint: "If access was denied, allow Ryokuon in System Settings → Privacy & Security, then return here.",
             .cancelQueued: "Cancel queued transcription",
+            .cancelTranscription: "Cancel transcription",
+            .progressCancelling: "Cancelling…",
             .reportIssue: "Report an issue or suggest a feature",
             .privacySummary: "Audio and transcripts stay on this Mac. Model downloads and update checks use the network.",
             .quitBusyTitle: "Work is still in progress",
