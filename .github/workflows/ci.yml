@@ -40,5 +40,5 @@ jobs:
           name: Ryokuon-development
           path: |
             .build/Ryokuon-development.zip
-            .build/visual-evidence/*.png
+            .build/visual-evidence/*
           retention-days: 7

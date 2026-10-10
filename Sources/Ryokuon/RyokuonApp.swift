@@ -43,6 +43,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "Ryokuon"
         item.menu = buildMenu()
         statusItem = item
+        if ProcessInfo.processInfo.environment["RYOKUON_UI_DIAGNOSTICS"] == "1" {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                for window in NSApp.windows {
+                    print("Window: \(window.frame), content: \(window.contentLayoutRect)")
+                    if let view = window.contentView { Self.traceView(view, depth: 0) }
+                }
+                fflush(stdout)
+            }
+        }
 
         withObservationTracking {
             _ = appState.isRecording
@@ -53,6 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in self?.refreshStatusItem() }
         }
+    }
+
+    private static func traceView(_ view: NSView, depth: Int) {
+        guard depth < 8 else { return }
+        print("\(String(repeating: " ", count: depth))\(type(of: view)): \(view.frame)")
+        for child in view.subviews { traceView(child, depth: depth + 1) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

@@ -365,7 +365,7 @@ private struct SessionSidebar: View {
             }
             Divider()
             RecordingControlBar(appState: appState)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(height: appState.isRecording ? 240 : 300, alignment: .top)
         }
         .onAppear { expandSelection() }
         .onChange(of: selection) { _, _ in expandSelection() }
@@ -958,16 +958,11 @@ struct SessionDetailPane: View {
                 }
             }
 
+            Divider()
+            CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
+                .frame(height: session.channels == 2 ? 100 : 60)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider()
-                CompactPlayerBar(appState: appState, session: session, meGain: $meGain, remoteGain: $remoteGain)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .background(.background)
-        }
         .onAppear { loadTranscript() }
         .onChange(of: appState.transcribingSessionID) { oldValue, _ in
             if oldValue == session.relativePath { loadTranscript() }
