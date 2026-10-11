@@ -31,7 +31,7 @@ enum L10nKey: CaseIterable {
     case settingsStorageFolder, settingsChangeFolder, settingsClose
     case settingsInputDevice, settingsOutputDevice, deviceSystemDefault
     case settingsUpdates, updateCurrentVersion, updateCheck, updateChecking
-    case updateUpToDate, updateInstall, updatePreparing
+    case updateUpToDate, updateInstall, updatePreparing, updateReleases
     case sessionNamePlaceholder, sessionPlay, sessionStop
     case gainMe, gainRemote
     case transcribeButton, retranscribeButton, notTranscribedYet
@@ -160,6 +160,7 @@ enum Localization {
             .updateUpToDate: "최신 버전입니다 (%@)",
             .updateInstall: "버전 %@ 설치 및 재실행",
             .updatePreparing: "다운로드하고 검증하는 중…",
+            .updateReleases: "GitHub에서 배포 버전 다운로드",
             .emptySubtitle: "아래에서 녹음을 시작하거나 오디오 파일을 끌어다 놓으세요",
             .recoveredBadge: "복구됨",
             .settingsTitle: "설정",
@@ -313,6 +314,7 @@ enum Localization {
             .updateUpToDate: "最新バージョンです (%@)",
             .updateInstall: "バージョン%@をインストールして再起動",
             .updatePreparing: "ダウンロードと検証中…",
+            .updateReleases: "GitHubでリリースをダウンロード",
             .emptySubtitle: "下から録音を始めるか、音声ファイルをドロップしてください",
             .recoveredBadge: "復旧済み",
             .settingsTitle: "設定",
@@ -466,6 +468,7 @@ enum Localization {
             .updateUpToDate: "Up to date (%@)",
             .updateInstall: "Install Version %@ and Relaunch",
             .updatePreparing: "Downloading and verifying…",
+            .updateReleases: "Download a Release from GitHub",
             .emptySubtitle: "Start a recording below, or drop an audio file here",
             .recoveredBadge: "Recovered",
             .settingsTitle: "Settings",

@@ -6,6 +6,7 @@ enum UpdateError: LocalizedError {
     case invalidRelease
     case invalidDownload
     case invalidSignature
+    case unsignedInstallation
     case unsupportedInstallLocation
     case commandFailed(String)
     case busy
@@ -15,6 +16,7 @@ enum UpdateError: LocalizedError {
         case .invalidRelease: "The GitHub release has no valid Ryokuon.zip asset."
         case .invalidDownload: "The downloaded app did not match the GitHub release."
         case .invalidSignature: "The downloaded app's signature does not match this installation."
+        case .unsignedInstallation: "This installation has no trusted publisher signature. Download the signed app from GitHub Releases and install it manually once."
         case .unsupportedInstallLocation: "Install Ryokuon in /Applications or ~/Applications to update it here."
         case .commandFailed(let message): message
         case .busy: "Finish the current recording or conversion before updating."
@@ -83,6 +85,16 @@ struct GitHubRelease: Decodable, Sendable {
         }
     }
 
+    func hasUpdate(for currentVersion: String) throws -> Bool {
+        guard draft != true, prerelease != true,
+              let latest = AppVersion(tagName), let current = AppVersion(currentVersion) else {
+            throw UpdateError.invalidRelease
+        }
+        guard latest > current else { return false }
+        guard installAsset != nil else { throw UpdateError.invalidRelease }
+        return true
+    }
+
     static func validDigest(_ digest: String?) -> Bool {
         guard let digest, digest.hasPrefix("sha256:") else { return false }
         let hex = digest.dropFirst(7)
@@ -126,10 +138,9 @@ final class AppUpdater {
                 throw UpdateError.invalidRelease
             }
             let found = try JSONDecoder().decode(GitHubRelease.self, from: data)
-            guard let latest = AppVersion(found.tagName), let current = AppVersion(currentVersion),
-                  found.installAsset != nil else { throw UpdateError.invalidRelease }
-            release = found
-            state = latest > current ? .available(found.version) : .upToDate(currentVersion)
+            let available = try found.hasUpdate(for: currentVersion)
+            release = available ? found : nil
+            state = available ? .available(found.version) : .upToDate(currentVersion)
         } catch {
             release = nil
             state = .failed(error.localizedDescription)
@@ -141,10 +152,16 @@ final class AppUpdater {
             state = .failed(UpdateError.busy.localizedDescription)
             return
         }
-        guard let release, let asset = release.installAsset,
-              let currentTeam = try? Self.teamIdentifier(of: Bundle.main.bundleURL),
-              let destination = Self.installedApplicationURL() else {
+        guard let release, let asset = release.installAsset else {
+            state = .failed(UpdateError.invalidRelease.localizedDescription)
+            return
+        }
+        guard let destination = Self.installedApplicationURL() else {
             state = .failed(UpdateError.unsupportedInstallLocation.localizedDescription)
+            return
+        }
+        guard let currentTeam = try? Self.teamIdentifier(of: Bundle.main.bundleURL) else {
+            state = .failed(UpdateError.unsignedInstallation.localizedDescription)
             return
         }
         state = .preparing(release.version)
