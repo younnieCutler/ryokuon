@@ -6,7 +6,7 @@ import Speech
 /// Word-level transcript output for one channel. `raw.json` (step 4 input)
 /// is just `[TranscriptWord]` sorted by `startMs` across both speakers —
 /// TranscriptBuilder merges same-speaker runs into utterances from this.
-struct TranscriptWord: Codable {
+struct TranscriptWord: Codable, Sendable {
     let speaker: String // "M" or "R"
     let text: String
     let startMs: Int
@@ -93,9 +93,8 @@ enum Transcriber {
                                                 reportingOptions: [], attributeOptions: attributes)
             try await ensureInstalled(modules: [transcriber], onProgress: onProgress)
 
-            let mono = try readMonoChannel(callURL)
             onProgress?("transcribing")
-            words = try await run(transcriber, buffer: mono, speaker: "U")
+            words = try await runFile(transcriber, url: callURL, speaker: "U")
         } else {
             let meTranscriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
                                                   reportingOptions: [], attributeOptions: attributes)
@@ -103,14 +102,11 @@ enum Transcriber {
                                                       reportingOptions: [], attributeOptions: attributes)
             try await ensureInstalled(modules: [meTranscriber, remoteTranscriber], onProgress: onProgress)
 
-            let (meChannel, remoteChannel) = try readStereoChannels(callURL)
-            applyGain(Float(meGain), to: meChannel)
-            applyGain(Float(remoteGain), to: remoteChannel)
-
+            guard channelCount == 2 else { throw TranscriberError.unexpectedFileFormat }
             onProgress?("transcribing me track")
-            let meWords = try await run(meTranscriber, buffer: meChannel, speaker: "M")
+            let meWords = try await runTrack(meTranscriber, url: callURL, channel: 0, gain: meGain, speaker: "M")
             onProgress?("transcribing remote track")
-            let remoteWords = try await run(remoteTranscriber, buffer: remoteChannel, speaker: "R")
+            let remoteWords = try await runTrack(remoteTranscriber, url: callURL, channel: 1, gain: remoteGain, speaker: "R")
             words = (meWords + remoteWords).sorted { $0.startMs < $1.startMs }
         }
 
@@ -127,49 +123,33 @@ enum Transcriber {
         try await request.downloadAndInstall()
     }
 
-    private static func applyGain(_ gain: Float, to buffer: AVAudioPCMBuffer) {
-        guard gain != 1.0, let channel = buffer.floatChannelData?[0] else { return }
-        var gain = gain
-        vDSP_vsmul(channel, 1, &gain, channel, 1, vDSP_Length(buffer.frameLength))
+    private static func runTrack(_ transcriber: SpeechTranscriber, url: URL,
+                                 channel: Int, gain: Double, speaker: String) async throws -> [TranscriptWord] {
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".speech-\(UUID().uuidString).flac")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try await Task.detached(priority: .utility) {
+            try AudioChannelExtractor.write(from: url, channel: channel, gain: gain, to: temporary)
+        }.value
+        return try await runFile(transcriber, url: temporary, speaker: speaker)
     }
 
-    /// `call.wav` is a stereo 16kHz Int16 file (L=me, R=remote). AVAudioFile
-    /// decodes to its `processingFormat` (float32, non-interleaved) on read,
-    /// so channels come back as separate pointers — no manual de-interleave.
-    private static func readStereoChannels(_ url: URL) throws -> (me: AVAudioPCMBuffer, remote: AVAudioPCMBuffer) {
-        let file = try AVAudioFile(forReading: url)
-        let format = file.processingFormat
-        guard format.channelCount == 2, let monoFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false
-        ) else { throw TranscriberError.unexpectedFileFormat }
-
-        let frameCount = AVAudioFrameCount(file.length)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
-              frameCount > 0 else { throw TranscriberError.unexpectedFileFormat }
-        try file.read(into: buffer)
-        guard let channelData = buffer.floatChannelData else { throw TranscriberError.unexpectedFileFormat }
-
-        func mono(from source: UnsafeMutablePointer<Float>) throws -> AVAudioPCMBuffer {
-            guard let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frameCount)
-            else { throw TranscriberError.unexpectedFileFormat }
-            mono.frameLength = frameCount
-            mono.floatChannelData![0].update(from: source, count: Int(frameCount))
-            return mono
+    private static func runFile(_ transcriber: SpeechTranscriber, url: URL,
+                                speaker: String) async throws -> [TranscriptWord] {
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let collector = Task {
+            var words: [TranscriptWord] = []
+            for try await result in transcriber.results { words.append(contentsOf: extractWords(result, speaker: speaker)) }
+            return words
         }
-        return (try mono(from: channelData[0]), try mono(from: channelData[1]))
-    }
-
-    /// `call.wav` is already 16kHz mono when no headset was in use at record
-    /// time (AudioCapture downmixes ME/REMOTE together — there's nothing to
-    /// separate). AVAudioFile decodes straight to its 1-channel
-    /// processingFormat, so no per-channel extraction is needed.
-    private static func readMonoChannel(_ url: URL) throws -> AVAudioPCMBuffer {
-        let file = try AVAudioFile(forReading: url)
-        let frameCount = AVAudioFrameCount(file.length)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount),
-              frameCount > 0 else { throw TranscriberError.unexpectedFileFormat }
-        try file.read(into: buffer)
-        return buffer
+        defer { collector.cancel() }
+        do {
+            _ = try await analyzer.analyzeSequence(from: AVAudioFile(forReading: url))
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            return try await collector.value
+        } catch {
+            await analyzer.cancelAndFinishNow()
+            throw error
+        }
     }
 
     /// Up to `seconds` from the middle of the recording, all channels mixed
@@ -214,6 +194,7 @@ enum Transcriber {
             return words
         }
 
+        defer { collector.cancel() }
         // 2s chunks: keeps this close to how the analyzer is meant to be
         // fed (a stream, not one giant buffer) without adding real
         // complexity — still one straight-line loop, no reason to feed the
@@ -231,9 +212,14 @@ enum Transcriber {
             continuation.finish()
         }
 
-        _ = try await analyzer.analyzeSequence(stream)
-        try await analyzer.finalizeAndFinishThroughEndOfInput()
-        return try await collector.value
+        do {
+            _ = try await analyzer.analyzeSequence(stream)
+            try await analyzer.finalizeAndFinishThroughEndOfInput()
+            return try await collector.value
+        } catch {
+            await analyzer.cancelAndFinishNow()
+            throw error
+        }
     }
 
     private static func extractWords(_ result: SpeechTranscriber.Result, speaker: String) -> [TranscriptWord] {

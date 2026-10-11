@@ -34,7 +34,8 @@ enum TranscriptBuilder {
 
     static func format(_ utterance: Utterance) -> String {
         let prefix = utterance.confidence < lowConfidenceThreshold ? "?" : ""
-        return "\(utterance.startMs)|\(utterance.speaker)|\(prefix)\(utterance.text)"
+        let text = utterance.text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        return "\(utterance.startMs)|\(utterance.speaker)|\(prefix)\(text)"
     }
 
     static func writeTranscript(_ utterances: [Utterance], to url: URL) throws {
@@ -47,7 +48,7 @@ enum TranscriptBuilder {
     static func parse(_ text: String) -> [Utterance] {
         text.split(separator: "\n").compactMap { rawLine in
             let parts = rawLine.split(separator: "|", maxSplits: 2)
-            guard parts.count == 3, let ms = Int(parts[0]) else { return nil }
+            guard parts.count == 3, let ms = Int(parts[0]), ms >= 0 else { return nil }
             return Utterance(speaker: String(parts[1]), startMs: ms, text: String(parts[2]), confidence: 1)
         }
     }

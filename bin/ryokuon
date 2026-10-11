@@ -4,10 +4,13 @@
 # separate Swift binary for it (Q8).
 set -euo pipefail
 
-# ponytail: env var override only, no UserDefaults read. The app's storage
-# folder setting (Q9) lives in UserDefaults, which a shell script can't read
-# without shelling out to `defaults`. Add that if the mismatch ever bites.
-ROOT="${RYOKUON_ROOT:-$HOME/Documents/ryokuon}"
+# Match the GUI's chosen storage root; RYOKUON_ROOT remains the explicit
+# override for automation and isolated tests.
+configured_root=""
+if [[ -z "${RYOKUON_ROOT:-}" ]] && command -v defaults >/dev/null 2>&1; then
+    configured_root="$(defaults read dev.ryokuon.app dev.ryokuon.storageRootPath 2>/dev/null || true)"
+fi
+ROOT="${RYOKUON_ROOT:-${configured_root:-$HOME/Documents/ryokuon}}"
 
 usage() {
     cat <<EOF
@@ -24,8 +27,12 @@ require_transcript() {
     case "$session" in
         ""|/*|..|../*|*/../*|*/..) echo "invalid session path" >&2; exit 1 ;;
     esac
-    local path="$ROOT/$session/transcript.txt"
-    if [[ ! -f "$path" ]]; then
+    local root path directory
+    root="$(cd -P "$ROOT" 2>/dev/null && pwd)" || { echo "storage root unavailable" >&2; exit 1; }
+    directory="$(cd -P "$ROOT/$session" 2>/dev/null && pwd)" || { echo "session unavailable" >&2; exit 1; }
+    [[ "$directory" == "$root/"* ]] || { echo "session is outside the storage root" >&2; exit 1; }
+    path="$directory/transcript.txt"
+    if [[ ! -f "$path" || -L "$path" ]]; then
         echo "no transcript.txt for session '$session' (looked in $path)" >&2
         exit 1
     fi
@@ -48,10 +55,12 @@ case "$cmd" in
         ;;
     search)
         [[ $# -ge 3 ]] || usage
-        grep -n -B2 -A2 -- "$3" "$(require_transcript "$2")" || true
+        grep -n -F -B2 -A2 -- "$3" "$(require_transcript "$2")" || true
         ;;
     range)
         [[ $# -ge 4 ]] || usage
+        [[ "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9]+$ && ${#3} -le 12 && ${#4} -le 12 ]] || { echo "range must use nonnegative integer milliseconds" >&2; exit 1; }
+        awk -v start="$3" -v end="$4" 'BEGIN { exit !(end >= start) }' || { echo "range end precedes start" >&2; exit 1; }
         awk -F'|' -v start="$3" -v end="$4" \
             '{ ts = $1 + 0; if (ts >= start && ts <= end) print }' \
             "$(require_transcript "$2")"

@@ -12,7 +12,12 @@ final class RingBuffer {
     private var writeIndex = 0
     private var count = 0
     private var lock = os_unfair_lock()
-    private(set) var droppedSamples = 0
+    private var lostSamples = 0
+    var droppedSamples: Int {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        return lostSamples
+    }
 
     init(capacity: Int) {
         self.capacity = capacity
@@ -43,7 +48,7 @@ final class RingBuffer {
             let tail = writeCount - capacity
             for i in 0 ..< capacity { storage[i] = sampleAt(tail + i) }
             writeIndex = 0
-            droppedSamples += count + writeCount - capacity
+            lostSamples += count + writeCount - capacity
             count = capacity
             return
         }
@@ -55,7 +60,7 @@ final class RingBuffer {
 
         let newCount = count + writeCount
         if newCount > capacity {
-            droppedSamples += newCount - capacity
+            lostSamples += newCount - capacity
             count = capacity
         } else {
             count = newCount

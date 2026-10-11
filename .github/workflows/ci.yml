@@ -1,0 +1,44 @@
+name: macOS checks
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && sw_vers && uname -m
+      - name: Install MP3 encoder
+        run: brew install lame
+      - name: Swift tests
+        run: swift test --parallel
+      - name: Release build and signed development bundle
+        env:
+          RYOKUON_SIGN_IDENTITY: '-'
+        run: bash Scripts/bundle.sh release
+      - name: Verify bundle and CLI
+        run: |
+          codesign --verify --deep --strict .build/Ryokuon.app
+          bash Scripts/test-cli.sh
+          bash -n install.sh Scripts/*.sh Resources/update-helper.sh bin/ryokuon
+      - name: Actual app screenshot with fictional data
+        run: bash Scripts/capture-demo.sh
+      - name: Package development artifact
+        run: ditto -c -k --keepParent .build/Ryokuon.app .build/Ryokuon-development.zip
+      - name: Development build artifact (not a production release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ryokuon-development
+          path: |
+            .build/Ryokuon-development.zip
+            .build/visual-evidence/*
+          retention-days: 7

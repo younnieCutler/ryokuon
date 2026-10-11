@@ -10,3 +10,13 @@ struct LocalizationTests {
         #expect(Localization.defaultLanguage(preferred: ["zh-Hans-CN"]) == "en") // unsupported -> English
     }
 }
+
+struct LocalizationCoverageTests {
+    @Test func allVisibleStringsHaveTranslations() {
+        for language in Localization.supportedLanguages {
+            for key in L10nKey.allCases {
+                #expect(!Localization.string(key, language: language.id).isEmpty)
+            }
+        }
+    }
+}

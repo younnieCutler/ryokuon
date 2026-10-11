@@ -114,3 +114,12 @@ struct TranscriptBuilderTests {
         #expect(!md.contains("おわり"))
     }
 }
+
+struct TranscriptContractTests {
+    @Test func formatKeepsEachUtteranceOnOnePhysicalLine() {
+        let text = TranscriptBuilder.format(.init(speaker: "M", startMs: 1000, text: "a\nb\rc|d", confidence: 1))
+        #expect(text == "1000|M|a b c|d")
+        #expect(TranscriptBuilder.parse(text).first?.text == "a b c|d")
+        #expect(TranscriptBuilder.parse("-1|M|bad timestamp").isEmpty)
+    }
+}

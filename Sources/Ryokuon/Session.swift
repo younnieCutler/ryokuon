@@ -14,6 +14,16 @@ struct Session: Codable, Sendable {
         case recovered
     }
 
+    enum TranscriptionState: String, Codable, Sendable {
+        case notStarted, queued, transcribing, completed, failed
+    }
+
+    struct Bookmark: Codable, Identifiable, Sendable {
+        let id: UUID
+        let seconds: Double
+        var title: String
+    }
+
     struct Gains: Codable, Sendable {
         var me: Double = 1.0
         var remote: Double = 1.0
@@ -37,6 +47,10 @@ struct Session: Codable, Sendable {
     /// pre-existing session.json files without this key still load — they
     /// were all recorded stereo, so 2 is the correct default for them.
     var channels: Int = 2
+    var notes: String = ""
+    var bookmarks: [Bookmark] = []
+    var transcriptionState: TranscriptionState = .notStarted
+    var transcriptionError: String?
 
     init(id: String, displayName: String, language: String, targetBundleID: String?,
          targetDisplayName: String, createdAt: Date, state: State, durationSeconds: Double,
@@ -67,11 +81,15 @@ struct Session: Codable, Sendable {
         durationSeconds = try container.decode(Double.self, forKey: .durationSeconds)
         gains = try container.decode(Gains.self, forKey: .gains)
         channels = try container.decodeIfPresent(Int.self, forKey: .channels) ?? 2
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        bookmarks = try container.decodeIfPresent([Bookmark].self, forKey: .bookmarks) ?? []
+        transcriptionState = try container.decodeIfPresent(TranscriptionState.self, forKey: .transcriptionState) ?? .notStarted
+        transcriptionError = try container.decodeIfPresent(String.self, forKey: .transcriptionError)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, displayName, language, targetBundleID, targetDisplayName
-        case createdAt, state, durationSeconds, gains, channels
+        case createdAt, state, durationSeconds, gains, channels, notes, bookmarks, transcriptionState, transcriptionError
     }
 }
 
@@ -203,7 +221,10 @@ final class SessionStore {
               session.id != ".", session.id != "..", !session.id.contains("/"),
               (1 ... 2).contains(session.channels),
               session.durationSeconds.isFinite, session.durationSeconds >= 0,
-              session.gains.me.isFinite, session.gains.remote.isFinite
+              session.gains.me.isFinite, session.gains.remote.isFinite,
+              (0...4).contains(session.gains.me), (0...4).contains(session.gains.remote),
+              session.bookmarks.allSatisfy({ $0.seconds.isFinite && $0.seconds >= 0 }),
+              Set(session.bookmarks.map(\.id)).count == session.bookmarks.count
         else { throw SessionError.invalidMetadata(url) }
         session.relativePath = String(directory.standardizedFileURL.path.dropFirst(rootDirectory.standardizedFileURL.path.count + 1))
         return session
@@ -220,30 +241,34 @@ final class SessionStore {
         AudioLibraryScanner.scan(root: rootDirectory).sessions
     }
 
-    /// Q11: on launch, find every session still marked "recording" — that
-    /// only happens if the process died before `finish()` ran — and repair
-    /// its WAV headers from the files' actual sizes. Returns what it fixed
-    /// so the caller can surface it to the user.
+    /// On startup, no writers from this process are active, so scan all
+    /// sessions left in recording state and recover complete WAV frames.
     @discardableResult
     func recoverCrashedSessions() -> [Session] {
-        var recovered: [Session] = []
-        for found in listSessions() where found.state == .recording {
-            var session = found
-            let directory = directory(for: session)
+        listSessions().filter { $0.state == .recording }
+            .compactMap { recoverCrashedSession(in: directory(for: $0)) }
+    }
 
-            let callURL = directory.appendingPathComponent(AudioCapture.fileName)
-            do {
-                try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
-                session.state = .recovered
-                session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
-                try save(session, in: directory)
-                recovered.append(session)
-            } catch {
-                // Keep recording state so a later launch can retry recovery.
-                continue
-            }
+    /// Recover only the known stopped capture during normal operation.
+    /// An unrelated import also starts in recording state while it writes,
+    /// so scanning every session here would modify its still-open WAV file.
+    @discardableResult
+    func recoverCrashedSession(in directory: URL) -> Session? {
+        guard var session = try? load(from: directory), session.state == .recording else { return nil }
+        let callURL = directory.appendingPathComponent(AudioCapture.fileName)
+        do {
+            let size = try FileManager.default.attributesOfItem(atPath: callURL.path)[.size] as? UInt64 ?? 0
+            guard size > 44 else { return nil }
+            try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
+            session.state = .recovered
+            session.transcriptionState = .notStarted
+            session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
+            try save(session, in: directory)
+            return session
+        } catch {
+            // Leave metadata untouched so a later launch can retry recovery.
+            return nil
         }
-        return recovered
     }
 
     /// Permanently removes the session's directory and everything in it.

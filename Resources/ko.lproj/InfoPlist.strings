@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "선택한 앱의 소리와 함께 내 목소리를 녹음합니다.";
+"NSAudioCaptureUsageDescription" = "선택한 앱에서 통화 상대방의 목소리를 녹음합니다.";
+"NSSpeechRecognitionUsageDescription" = "이 Mac에서 녹음을 텍스트로 변환합니다.";

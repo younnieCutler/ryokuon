@@ -18,6 +18,8 @@ esac
 [[ "$staged" == "$work/unpacked/Ryokuon.app" ]] || exit 2
 [[ -d "$target" && -d "$staged" ]] || exit 2
 
+[[ "$team" =~ ^[A-Z0-9]{10}$ ]] || exit 2
+trap 'rm -rf -- "$work"' EXIT
 log="$HOME/Library/Logs/Ryokuon-update.log"
 mkdir -p "$(dirname "$log")"
 exec >>"$log" 2>&1
@@ -39,6 +41,8 @@ backup="$parent/.Ryokuon-backup-$pid.app"
 verify_app() {
   local app="$1"
   /usr/bin/codesign --verify --deep --strict "$app"
+  /usr/bin/xcrun stapler validate "$app"
+  /usr/sbin/spctl --assess --type execute "$app"
   local actual_team
   actual_team="$(/usr/bin/codesign -dv --verbose=4 "$app" 2>&1 | /usr/bin/awk -F= '$1 == "TeamIdentifier" { print $2 }')"
   [[ "$actual_team" == "$team" ]]
@@ -51,11 +55,14 @@ verify_app() {
 verify_app "$incoming"
 
 restore_old_app() {
+  local status=$?
   if [[ -d "$backup" ]]; then
     if [[ -d "$target" ]]; then mv "$target" "$incoming"; fi
     mv "$backup" "$target"
     open "$target" || true
   fi
+  rm -rf -- "$work"
+  exit "$status"
 }
 trap restore_old_app EXIT
 

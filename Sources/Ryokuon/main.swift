@@ -125,6 +125,19 @@ func recover(storageRoot: URL) throws {
     }
 }
 
+// One writer process per user, including the developer commands. Read-only
+// process listing can run alongside the GUI. Tests use isolated temporary roots.
+var processLease: ProcessLease?
+if arguments.first != "list" {
+    do {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        processLease = try ProcessLease(directory: support.appendingPathComponent("Ryokuon"))
+    } catch {
+        FileHandle.standardError.write(Data("Ryokuon is already running or its process lock is unavailable: \(error)\n".utf8))
+        exit(1)
+    }
+}
+
 if arguments.isEmpty {
     RyokuonApp.main()
 } else {

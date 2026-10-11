@@ -1,0 +1,29 @@
+name: Bug report
+description: A reproducible recording, transcription, playback or installation problem
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: 'Use fictional or consented test data. Do not upload private recordings, transcripts or credentials. Security problems belong in the private channel in SECURITY.md.'
+  - type: input
+    id: version
+    attributes:
+      label: Ryokuon version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version, Mac model, microphone/headset and call app
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected result and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted error text, screenshots or synthetic fixture

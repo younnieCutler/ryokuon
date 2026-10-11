@@ -61,23 +61,32 @@ struct GitHubRelease: Decodable, Sendable {
 
     let tagName: String
     let assets: [Asset]
+    let draft: Bool?
+    let prerelease: Bool?
 
     enum CodingKeys: String, CodingKey {
         case tagName = "tag_name"
-        case assets
+        case assets, draft, prerelease
     }
 
     var version: String { tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName }
 
     var installAsset: Asset? {
-        assets.first {
+        guard draft != true, prerelease != true, AppVersion(tagName) != nil else { return nil }
+        return assets.first {
             $0.name == "Ryokuon.zip" && $0.size > 0 && $0.size < 200_000_000
-                && $0.digest?.hasPrefix("sha256:") == true
+                && Self.validDigest($0.digest)
                 && $0.browserDownloadURL.scheme == "https"
                 && $0.browserDownloadURL.host == "github.com"
                 && $0.browserDownloadURL.path.hasPrefix(
                     "/younnieCutler/ryokuon/releases/download/\(tagName)/")
         }
+    }
+
+    static func validDigest(_ digest: String?) -> Bool {
+        guard let digest, digest.hasPrefix("sha256:") else { return false }
+        let hex = digest.dropFirst(7)
+        return hex.count == 64 && hex.allSatisfy { "0123456789abcdefABCDEF".contains($0) }
     }
 }
 
@@ -184,7 +193,9 @@ final class AppUpdater {
               let expected = asset.digest?.dropFirst("sha256:".count), expected.count == 64 else {
             throw UpdateError.invalidRelease
         }
-        let actual = SHA256.hash(data: try Data(contentsOf: archive))
+        let bytes = try Data(contentsOf: archive)
+        guard bytes.count == asset.size else { throw UpdateError.invalidDownload }
+        let actual = SHA256.hash(data: bytes)
             .map { String(format: "%02x", $0) }.joined()
         guard actual == expected.lowercased() else { throw UpdateError.invalidDownload }
         let unpacked = work.appendingPathComponent("unpacked", isDirectory: true)
@@ -198,13 +209,16 @@ final class AppUpdater {
               bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == release.version,
               try teamIdentifier(of: app) == team else { throw UpdateError.invalidSignature }
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+        try run("/usr/bin/xcrun", ["stapler", "validate", app.path])
+        try run("/usr/sbin/spctl", ["--assess", "--type", "execute", app.path])
         return app
     }
 
     nonisolated private static func teamIdentifier(of app: URL) throws -> String {
         let output = try run("/usr/bin/codesign", ["-dv", "--verbose=4", app.path])
         guard let team = output.split(separator: "\n").first(where: { $0.hasPrefix("TeamIdentifier=") })?
-            .split(separator: "=").last.map(String.init), !team.isEmpty else {
+            .split(separator: "=").last.map(String.init), team.count == 10,
+              team.allSatisfy({ "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".contains($0) }) else {
             throw UpdateError.invalidSignature
         }
         return team
