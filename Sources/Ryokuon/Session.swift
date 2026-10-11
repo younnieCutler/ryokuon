@@ -241,33 +241,34 @@ final class SessionStore {
         AudioLibraryScanner.scan(root: rootDirectory).sessions
     }
 
-    /// Q11: on launch, find every session still marked "recording" — that
-    /// only happens if the process died before `finish()` ran — and repair
-    /// its WAV headers from the files' actual sizes. Returns what it fixed
-    /// so the caller can surface it to the user.
+    /// On startup, no writers from this process are active, so scan all
+    /// sessions left in recording state and recover complete WAV frames.
     @discardableResult
     func recoverCrashedSessions() -> [Session] {
-        var recovered: [Session] = []
-        for found in listSessions() where found.state == .recording {
-            var session = found
-            let directory = directory(for: session)
+        listSessions().filter { $0.state == .recording }
+            .compactMap { recoverCrashedSession(in: directory(for: $0)) }
+    }
 
-            let callURL = directory.appendingPathComponent(AudioCapture.fileName)
-            do {
-                let size = try FileManager.default.attributesOfItem(atPath: callURL.path)[.size] as? UInt64 ?? 0
-                guard size > 44 else { continue }
-                try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
-                session.state = .recovered
-                session.transcriptionState = .notStarted
-                session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
-                try save(session, in: directory)
-                recovered.append(session)
-            } catch {
-                // Keep recording state so a later launch can retry recovery.
-                continue
-            }
+    /// Recover only the known stopped capture during normal operation.
+    /// An unrelated import also starts in recording state while it writes,
+    /// so scanning every session here would modify its still-open WAV file.
+    @discardableResult
+    func recoverCrashedSession(in directory: URL) -> Session? {
+        guard var session = try? load(from: directory), session.state == .recording else { return nil }
+        let callURL = directory.appendingPathComponent(AudioCapture.fileName)
+        do {
+            let size = try FileManager.default.attributesOfItem(atPath: callURL.path)[.size] as? UInt64 ?? 0
+            guard size > 44 else { return nil }
+            try WAVWriter.repairHeader(at: callURL, channels: UInt16(session.channels))
+            session.state = .recovered
+            session.transcriptionState = .notStarted
+            session.durationSeconds = wavDuration(at: callURL, channels: UInt16(session.channels))
+            try save(session, in: directory)
+            return session
+        } catch {
+            // Leave metadata untouched so a later launch can retry recovery.
+            return nil
         }
-        return recovered
     }
 
     /// Permanently removes the session's directory and everything in it.

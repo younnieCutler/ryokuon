@@ -21,6 +21,27 @@ enum MeetingSearch {
 }
 
 enum MeetingMarkdown {
+    /// Notes and bookmarks remain exportable even without a transcript
+    /// (for example when automatic transcription is disabled).
+    static func document(session: Session, in directory: URL, range: ClosedRange<Double>? = nil) throws -> String {
+        let transcriptURL = directory.appendingPathComponent("transcript.txt")
+        let utterances: [Utterance]
+        if FileManager.default.fileExists(atPath: transcriptURL.path) {
+            let text = try String(contentsOf: transcriptURL, encoding: .utf8)
+            utterances = TranscriptBuilder.parse(text)
+        } else {
+            utterances = []
+        }
+        let rangeMs: ClosedRange<Int>? = range.map {
+            Int($0.lowerBound * 1000) ... Int($0.upperBound * 1000)
+        }
+        let body = TranscriptBuilder.markdown(
+            utterances, title: session.displayName, createdAt: session.createdAt,
+            durationSeconds: session.durationSeconds, language: session.language, rangeMs: rangeMs
+        )
+        return body + appendix(notes: session.notes, bookmarks: session.bookmarks, range: range)
+    }
+
     static func appendix(notes: String, bookmarks: [Session.Bookmark], range: ClosedRange<Double>? = nil) -> String {
         var sections: [String] = []
         if !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

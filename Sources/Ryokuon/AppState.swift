@@ -423,9 +423,9 @@ final class AppState {
         recordingTimer = nil
         recordingStartDate = nil
         recordingElapsed = 0
-        // Failed finalization leaves recording metadata for header recovery.
-        // Try now as well, so the saved audio can be opened without a restart.
-        sessionStore.recoverCrashedSessions()
+        // Recover only this stopped capture. Concurrent imports have open
+        // WAV writers and must never be included in an app-wide recovery scan.
+        sessionStore.recoverCrashedSession(in: directory)
         reloadSessions()
         requestedSelectionPath = session.relativePath + "/" + AudioCapture.fileName
         // Same flow as an imported file: a finished recording goes straight to text.
@@ -799,16 +799,9 @@ final class AppState {
             }
             if markdown {
                 let latest = try sessionStore.load(from: directory)
-                let text = try String(contentsOf: directory.appendingPathComponent("transcript.txt"), encoding: .utf8)
-                let md = TranscriptBuilder.markdown(
-                    TranscriptBuilder.parse(text), title: session.displayName, createdAt: session.createdAt,
-                    durationSeconds: session.durationSeconds, language: session.language,
-                    rangeMs: isFull ? nil : Int(range.lowerBound * 1000) ... Int(range.upperBound * 1000)
-                )
-                let additions = MeetingMarkdown.appendix(notes: latest.notes, bookmarks: latest.bookmarks,
-                    range: isFull ? nil : range)
+                let md = try MeetingMarkdown.document(session: latest, in: directory, range: isFull ? nil : range)
                 let mdURL = base.appendingPathExtension("md")
-                try (md + additions).write(to: mdURL, atomically: true, encoding: .utf8)
+                try md.write(to: mdURL, atomically: true, encoding: .utf8)
                 written.append(mdURL)
             }
             lastError = nil

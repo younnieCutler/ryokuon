@@ -35,6 +35,33 @@ struct MeetingWorkspaceTests {
         #expect(text.contains("decision"))
         #expect(!text.contains("early"))
     }
+    @Test func markdownExportWithoutTranscriptIncludesMeetingContext() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        var (session, directory) = try store.createSession(language: "ja-JP", targetBundleID: nil, targetDisplayName: "Zoom")
+        session.state = .finished
+        session.durationSeconds = 30
+        session.notes = "Follow up with the team"
+        session.bookmarks = [
+            .init(id: UUID(), seconds: 2, title: "opening marker"),
+            .init(id: UUID(), seconds: 12, title: "decision marker")
+        ]
+        try store.save(session, in: directory)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("transcript.txt").path))
+
+        let exported = try MeetingMarkdown.document(session: try store.load(from: directory), in: directory)
+        #expect(exported.contains("# " + session.displayName))
+        #expect(exported.contains("Follow up with the team"))
+        #expect(exported.contains("opening marker"))
+        #expect(exported.contains("decision marker"))
+
+        let selected = try MeetingMarkdown.document(session: session, in: directory, range: 10...20)
+        #expect(selected.contains("Follow up with the team"))
+        #expect(selected.contains("decision marker"))
+        #expect(!selected.contains("opening marker"))
+    }
+
 }
 
 @MainActor
@@ -93,5 +120,38 @@ struct DurableQueueTests {
         // Deleting queued work is explicit and removes its persistent state.
         app.delete([session.relativePath])
         #expect(app.canChangeStorageFolder)
+    }
+}
+
+
+struct SessionRecoveryIsolationTests {
+    @Test func recoveringStoppedCaptureDoesNotTouchConcurrentImport() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SessionStore(rootDirectory: root)
+        let (_, stoppedDirectory) = try store.createSession(
+            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Zoom")
+        let (_, importingDirectory) = try store.createSession(
+            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Import")
+
+        let stoppedURL = stoppedDirectory.appendingPathComponent(AudioCapture.fileName)
+        do {
+            let writer = try WAVWriter(url: stoppedURL)
+            try writer.append([Int16](repeating: 1, count: 16_000))
+            // Simulate a failed stop: the handle closes without finish().
+        }
+
+        let importURL = importingDirectory.appendingPathComponent(AudioCapture.fileName)
+        let importWriter = try WAVWriter(url: importURL)
+        try importWriter.append([Int16](repeating: 2, count: 16_000))
+        let importBefore = try Data(contentsOf: importURL)
+        let recovered = store.recoverCrashedSession(in: stoppedDirectory)
+
+        #expect(recovered?.state == .recovered)
+        #expect(try store.load(from: stoppedDirectory).state == .recovered)
+        #expect(try store.load(from: importingDirectory).state == .recording)
+        #expect(try Data(contentsOf: importURL) == importBefore)
+        try importWriter.finish()
+        #expect(try store.load(from: importingDirectory).state == .recording)
     }
 }
