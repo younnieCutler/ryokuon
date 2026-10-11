@@ -129,10 +129,11 @@ struct SessionRecoveryIsolationTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = SessionStore(rootDirectory: root)
+        // Match the 1-channel WAV fixtures; default sessions have 2 channels.
         let (_, stoppedDirectory) = try store.createSession(
-            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Zoom")
+            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Zoom", channels: 1)
         let (_, importingDirectory) = try store.createSession(
-            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Import")
+            language: "ja-JP", targetBundleID: nil, targetDisplayName: "Import", channels: 1)
 
         let stoppedURL = stoppedDirectory.appendingPathComponent(AudioCapture.fileName)
         do {
