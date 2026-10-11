@@ -69,7 +69,7 @@ enum L10nKey: CaseIterable {
     case exportPreview, exportAll, exportLength // exportLength: %@
     case importingFile, dropHint // importingFile: %@
     case exportQuality, qualityVoice, qualityCompact, qualityStandard
-    case exportRangeHint, formatMP3Subtitle, formatMDSubtitle, formatNeedsLame, formatNeedsTranscript
+    case exportRangeHint, formatMP3Subtitle, formatMDSubtitle, formatNeedsLame, formatMeetingContext
     case formatUtterances // %d
     case exportRunFormats // %@ = "MP3 + MD"
     case exportRun, lameMissing
@@ -244,9 +244,9 @@ enum Localization {
             .exportRun: "내보내기",
             .exportRangeHint: "파형을 끌어서 내보낼 구간을 고르세요",
             .formatMP3Subtitle: "음성 파일",
-            .formatMDSubtitle: "분석용 텍스트",
+            .formatMDSubtitle: "회의 기록",
             .formatNeedsLame: "lame 설치 필요",
-            .formatNeedsTranscript: "텍스트 변환 후 사용 가능",
+            .formatMeetingContext: "노트와 북마크",
             .formatUtterances: "발화 %d개",
             .exportRunFormats: "%@ 내보내기",
             .lameMissing: "MP3 변환에 lame이 필요함 — 터미널에서 brew install lame",
@@ -397,9 +397,9 @@ enum Localization {
             .exportRun: "書き出す",
             .exportRangeHint: "波形をドラッグして書き出す区間を選択",
             .formatMP3Subtitle: "音声ファイル",
-            .formatMDSubtitle: "分析用テキスト",
+            .formatMDSubtitle: "会議の記録",
             .formatNeedsLame: "lameのインストールが必要",
-            .formatNeedsTranscript: "文字起こし後に利用可能",
+            .formatMeetingContext: "メモとブックマーク",
             .formatUtterances: "発話 %d件",
             .exportRunFormats: "%@ を書き出す",
             .lameMissing: "MP3変換にはlameが必要 — ターミナルで brew install lame",
@@ -550,9 +550,9 @@ enum Localization {
             .exportRun: "Export",
             .exportRangeHint: "Drag on the waveform to pick the range to export",
             .formatMP3Subtitle: "Audio file",
-            .formatMDSubtitle: "Text for analysis",
+            .formatMDSubtitle: "Meeting record",
             .formatNeedsLame: "Needs lame installed",
-            .formatNeedsTranscript: "Available after transcription",
+            .formatMeetingContext: "Notes and bookmarks",
             .formatUtterances: "%d utterances",
             .exportRunFormats: "Export %@",
             .lameMissing: "MP3 export needs lame — run brew install lame in Terminal",

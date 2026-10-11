@@ -963,7 +963,13 @@ struct SessionDetailPane: View {
                 .frame(height: session.channels == 2 ? 100 : 60)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { loadTranscript() }
+        .onAppear {
+            loadTranscript()
+            if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true",
+               ProcessInfo.processInfo.environment["RYOKUON_UI_EXPORT_CHECK"] == "1" {
+                showingExport = true
+            }
+        }
         .onChange(of: appState.transcribingSessionID) { oldValue, _ in
             if oldValue == session.relativePath { loadTranscript() }
         }
@@ -1363,7 +1369,10 @@ struct ExportSheet: View {
         self.utteranceStarts = utteranceStarts
         _end = State(initialValue: session.durationSeconds)
         _exportMP3 = State(initialValue: MP3Exporter.lameURL != nil)
-        _exportMD = State(initialValue: !utteranceStarts.isEmpty)
+        let hasMeetingContext = !utteranceStarts.isEmpty
+            || !session.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !session.bookmarks.isEmpty
+        _exportMD = State(initialValue: hasMeetingContext || MP3Exporter.lameURL == nil)
         _peaks = State(initialValue: peaks)
     }
 
@@ -1444,6 +1453,13 @@ struct ExportSheet: View {
             guard peaks == nil, let url = AudioCapture.audioFileURL(in: appState.sessionStore.directory(for: session))
             else { return }
             peaks = (try? await Task.detached { try Waveform.peaks(of: url, buckets: 160) }.value) ?? []
+            // CI uses the real sheet defaults and action, with fictional data.
+            if ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true",
+               ProcessInfo.processInfo.environment["RYOKUON_UI_EXPORT_CHECK"] == "1" {
+                try? await Task.sleep(for: .seconds(12))
+                guard !Task.isCancelled else { return }
+                runExport()
+            }
         }
         // Preview stops itself at the range end instead of playing on.
         .onChange(of: appState.playbackTime) { _, time in
@@ -1458,8 +1474,8 @@ struct ExportSheet: View {
                    isOn: $exportMP3, isAvailable: hasLame)
         FormatCard(title: "MD", subtitle: appState.t(.formatMDSubtitle), systemImage: "doc.text",
                    detail: hasTranscript ? appState.t(.formatUtterances, utterancesInRange)
-                                         : appState.t(.formatNeedsTranscript),
-                   isOn: $exportMD, isAvailable: hasTranscript)
+                                         : appState.t(.formatMeetingContext),
+                   isOn: $exportMD, isAvailable: true)
     }
 
     @ViewBuilder private var qualityControls: some View {

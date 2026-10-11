@@ -28,6 +28,7 @@ defaults write dev.ryokuon.app dev.ryokuon.hasOpenedLibrary -bool true
 defaults write dev.ryokuon.app dev.ryokuon.appLanguage -string en
 mkdir -p "$ROOT/.build/visual-evidence"
 RYOKUON_UI_DIAGNOSTICS=1 "$ROOT/.build/Ryokuon.app/Contents/MacOS/Ryokuon" > "$ROOT/.build/visual-evidence/app.log" 2>&1 &
+app_pid=$!
 sleep 8
 pgrep -x Ryokuon >/dev/null
 mkdir -p "$ROOT/.build/visual-evidence"
@@ -39,3 +40,35 @@ done
 grep -q 'Narrow-window visual check:' "$ROOT/.build/visual-evidence/app.log"
 sleep 2
 screencapture -x "$ROOT/.build/visual-evidence/narrow-workspace.png"
+
+# Exercise the actual export sheet and its default format selection with
+# automatic transcription disabled and no transcript file.
+kill "$app_pid"
+wait "$app_pid" || true
+python3 - "$session" <<'PY'
+import json,sys
+from pathlib import Path
+directory=Path(sys.argv[1]).parent
+(directory/'transcript.txt').unlink()
+path=directory/'session.json'; metadata=json.loads(path.read_text())
+metadata['transcriptionState']='notStarted'; path.write_text(json.dumps(metadata))
+PY
+defaults write dev.ryokuon.app dev.ryokuon.autoTranscribe -bool false
+RYOKUON_UI_DIAGNOSTICS=1 RYOKUON_UI_EXPORT_CHECK=1 "$ROOT/.build/Ryokuon.app/Contents/MacOS/Ryokuon" > "$ROOT/.build/visual-evidence/notes-export.log" 2>&1 &
+sleep 8
+pgrep -x Ryokuon >/dev/null
+screencapture -x "$ROOT/.build/visual-evidence/notes-export.png"
+md="$(dirname "$session")/Release planning — next steps.md"
+for attempt in {1..30}; do
+    [[ -f "$md" ]] && break
+    sleep 1
+done
+python3 - "$md" "$ROOT/.build/visual-evidence/notes-export.txt" <<'PY'
+import sys
+from pathlib import Path
+text=Path(sys.argv[1]).read_text()
+for expected in ('# Release planning — next steps', 'Decision: keep recordings local.', 'Launch decision'):
+    assert expected in text, f'missing exported meeting context: {expected}'
+Path(sys.argv[2]).write_text(text)
+print('Actual export-sheet regression check passed without a transcript')
+PY

@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if let view = window.contentView { Self.traceView(view, depth: 0) }
                 }
                 fflush(stdout)
+                if ProcessInfo.processInfo.environment["RYOKUON_UI_EXPORT_CHECK"] == "1" { return }
                 try? await Task.sleep(for: .seconds(9))
                 if let window = NSApp.windows.first(where: { $0.contentView != nil && $0.frame.width > 500 }) {
                     window.setContentSize(NSSize(width: 620, height: 560))
