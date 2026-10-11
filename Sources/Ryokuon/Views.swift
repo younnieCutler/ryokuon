@@ -838,6 +838,7 @@ struct SettingsSheetView: View {
                         Task { await updater.check() }
                     }
                     .disabled(updater.isBusy)
+                    Link(appState.t(.updateReleases), destination: URL(string: "https://github.com/younnieCutler/ryokuon/releases/latest")!)
                     switch updater.state {
                     case .idle: EmptyView()
                     case .checking:

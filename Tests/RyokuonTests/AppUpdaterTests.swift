@@ -26,4 +26,15 @@ struct AppUpdaterTests {
         let wrong = json.replacingOccurrences(of: "github.com", with: "example.com")
         #expect(try JSONDecoder().decode(GitHubRelease.self, from: Data(wrong.utf8)).installAsset == nil)
     }
+    @Test func currentOrOlderReleaseNeedsNoInstallAsset() throws {
+        let release = try JSONDecoder().decode(GitHubRelease.self,
+            from: Data(#"{"tag_name":"v0.1.3","assets":[]}"#.utf8))
+        #expect(try release.hasUpdate(for: "0.1.3") == false)
+        #expect(try release.hasUpdate(for: "0.2.0") == false)
+        #expect(throws: (any Error).self) { try release.hasUpdate(for: "0.1.2") }
+        let draft = try JSONDecoder().decode(GitHubRelease.self,
+            from: Data(#"{"tag_name":"v0.1.3","draft":true,"assets":[]}"#.utf8))
+        #expect(throws: (any Error).self) { try draft.hasUpdate(for: "0.2.0") }
+    }
+
 }
