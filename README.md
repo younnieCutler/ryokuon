@@ -40,6 +40,17 @@ Move `Ryokuon.app` to `/Applications` from Finder after extraction. The current 
 
 For a future production release, download the signed and notarized app from [Releases](https://github.com/younnieCutler/ryokuon/releases) and follow its installation instructions.
 
+### Uninstall
+
+Quit Ryokuon, then remove only the installed application:
+
+```bash
+osascript -e 'tell application "Ryokuon" to quit' 2>/dev/null || true
+sudo rm -rf -- /Applications/Ryokuon.app
+```
+
+This **does not delete your recordings, transcripts or notes** (by default in `~/Documents/ryokuon/`). Delete those separately in Finder only if you explicitly want to erase your data. If you installed the app somewhere other than `/Applications`, remove that specific copy instead. The command requires administrator authorization.
+
 For development:
 
 ```bash
