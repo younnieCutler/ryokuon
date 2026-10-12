@@ -25,7 +25,20 @@ Actual macOS app with fictional meeting data.
 
 Apple silicon · macOS 26+ · Xcode 26 / Swift 6.2+ to build from source.
 
-For a production release, download the notarized `Ryokuon.dmg` from [Releases](https://github.com/younnieCutler/ryokuon/releases), open it and drag Ryokuon into Applications. Verify that the release notes identify a notarized build. Keep Gatekeeper enabled.
+### Download with curl
+
+Download the latest published release directly from GitHub:
+
+```bash
+curl -fL --retry 3 \
+  https://github.com/younnieCutler/ryokuon/releases/latest/download/Ryokuon.zip \
+  -o Ryokuon.zip
+unzip -q Ryokuon.zip
+```
+
+Move `Ryokuon.app` to `/Applications` from Finder after extraction. The current release asset is `Ryokuon.zip` (v0.1.3), not a DMG. This command downloads the newest non-prerelease version as long as future releases keep the `Ryokuon.zip` asset name. Check the release notes and signing/notarization status before running the app; existing 0.1.x builds are **not** guaranteed to be notarized. Keep Gatekeeper enabled.
+
+For a future production release, download the signed and notarized app from [Releases](https://github.com/younnieCutler/ryokuon/releases) and follow its installation instructions.
 
 For development:
 
